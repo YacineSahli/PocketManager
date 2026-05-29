@@ -19,7 +19,7 @@ INSTALL_DIR="$HOME/pocketmanager"
 VENV_DIR="$INSTALL_DIR/.venv"
 POCKETBASES_DIR="/home/ubuntu/pocketbases"
 CACHE_DIR="/home/ubuntu/.pocketmanager/cache"
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
 print_banner() {
@@ -305,9 +305,102 @@ add_to_path() {
     info "Created symlink: /usr/local/bin/pm -> ${VENV_DIR}/bin/pm"
 }
 
-# ─── Step 8: Print success ──────────────────────────────────────────────────
+# ─── Step 8: Configure Pangolin (interactive) ────────────────────────────────
+setup_pangolin() {
+    step 8 "Pangolin reverse-proxy setup"
+
+    local config_file="$INSTALL_DIR/config.json"
+
+    # Check if Pangolin is already configured
+    if [[ -f "$config_file" ]]; then
+        local has_key has_org has_domain has_site
+        has_key=$(jq -r '.pangolin.api_key // ""' "$config_file" 2>/dev/null)
+        has_org=$(jq -r '.pangolin.org_id // ""' "$config_file" 2>/dev/null)
+        has_domain=$(jq -r '.pangolin.default_domain_id // ""' "$config_file" 2>/dev/null)
+        has_site=$(jq -r '.pangolin.site_id // ""' "$config_file" 2>/dev/null)
+
+        if [[ -n "$has_key" && -n "$has_org" && -n "$has_domain" && -n "$has_site" ]]; then
+            info "Pangolin is already fully configured. Skipping setup."
+            return
+        fi
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Pangolin${NC} enables automatic public HTTPS URLs for your instances."
+    echo -e "  You can configure it now or skip and set it up later with ${BOLD}pm config set${NC}."
+    echo ""
+    echo -e "  To find the required values, open your ${BOLD}Pangolin dashboard${NC}:"
+    echo -e "    • ${BOLD}API Key${NC}  → Organization → API Keys → Create"
+    echo -e "    • ${BOLD}Org ID${NC}   → Organization settings"
+    echo -e "    • ${BOLD}Domain ID${NC} → Organization → Domains"
+    echo -e "    • ${BOLD}Site ID${NC}  → Sites page"
+    echo ""
+
+    # Non-interactive check
+    if ! [[ -t 0 ]]; then
+        warn "Non-interactive terminal detected. Skipping Pangolin setup."
+        warn "Configure it later with: pm config set pangolin.api_key <value>"
+        return
+    fi
+
+    read -rp "Configure Pangolin now? [y/N] " answer || answer=""
+    answer="${answer:-N}"
+    if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+        info "Skipping Pangolin setup. Configure it later with 'pm config set'."
+        return
+    fi
+
+    echo ""
+
+    # Collect values
+    local api_key="" org_id="" domain_id="" site_id=""
+
+    read -rp "  API Key: " api_key
+    api_key="${api_key// /}"  # trim spaces
+    if [[ -z "$api_key" ]]; then
+        warn "No API key provided. Skipping Pangolin setup."
+        return
+    fi
+
+    read -rp "  Organization ID: " org_id
+    org_id="${org_id// /}"
+    if [[ -z "$org_id" ]]; then
+        warn "No org ID provided. Skipping Pangolin setup."
+        return
+    fi
+
+    read -rp "  Domain ID: " domain_id
+    domain_id="${domain_id// /}"
+    if [[ -z "$domain_id" ]]; then
+        warn "No domain ID provided. Skipping Pangolin setup."
+        return
+    fi
+
+    read -rp "  Site ID: " site_id
+    site_id="${site_id// /}"
+    if [[ -z "$site_id" ]]; then
+        warn "No site ID provided. Skipping Pangolin setup."
+        return
+    fi
+
+    # Write values via pm config set
+    export PATH="$VENV_DIR/bin:$PATH"
+
+    pm config set pangolin.api_key "$api_key" 2>/dev/null && \
+    pm config set pangolin.org_id "$org_id" 2>/dev/null && \
+    pm config set pangolin.default_domain_id "$domain_id" 2>/dev/null && \
+    pm config set pangolin.site_id "$site_id" 2>/dev/null
+
+    if [[ $? -eq 0 ]]; then
+        info "Pangolin configured successfully."
+    else
+        warn "Failed to write Pangolin config. Set it manually with 'pm config set'."
+    fi
+}
+
+# ─── Step 9: Print success ──────────────────────────────────────────────────
 print_success() {
-    step 8 "Done!"
+    step 9 "Done!"
 
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
@@ -322,19 +415,39 @@ print_success() {
     echo -e "    pm create myapp        Create a new instance"
     echo -e "    pm dashboard           Launch the web dashboard"
     echo ""
-    echo -e "  ${BOLD}Next step — configure Pangolin (for public HTTPS URLs):${NC}"
-    echo ""
-    echo -e "    1. Open your Pangolin dashboard"
-    echo -e "    2. Go to ${BOLD}Organization → API Keys${NC} and create an API key"
-    echo -e "       (grant it resource management permissions)"
-    echo -e "    3. Note your ${BOLD}org ID${NC}, ${BOLD}domain ID${NC}, and ${BOLD}site ID${NC}"
-    echo -e "       (found in Organization settings, Domains, and Sites)"
-    echo -e "    4. Run:"
-    echo ""
-    echo -e "       ${BOLD}pm config set pangolin.api_key YOUR_KEY${NC}"
-    echo -e "       ${BOLD}pm config set pangolin.org_id YOUR_ORG_ID${NC}"
-    echo -e "       ${BOLD}pm config set pangolin.default_domain_id YOUR_DOMAIN_ID${NC}"
-    echo -e "       ${BOLD}pm config set pangolin.site_id YOUR_SITE_ID${NC}"
+
+    # Check if Pangolin is configured
+    local pangolin_ready="no"
+    if [[ -f "$INSTALL_DIR/config.json" ]]; then
+        local _pk _po _pd _ps
+        _pk=$(jq -r '.pangolin.api_key // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
+        _po=$(jq -r '.pangolin.org_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
+        _pd=$(jq -r '.pangolin.default_domain_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
+        _ps=$(jq -r '.pangolin.site_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
+        if [[ -n "$_pk" && -n "$_po" && -n "$_pd" && -n "$_ps" ]]; then
+            pangolin_ready="yes"
+        fi
+    fi
+
+    if [[ "$pangolin_ready" == "yes" ]]; then
+        echo -e "  ${BOLD}Pangolin:${NC} ${GREEN}configured ✓${NC}"
+    else
+        echo -e "  ${BOLD}Pangolin:${NC} ${YELLOW}not configured${NC} (instances will work on localhost only)"
+        echo ""
+        echo -e "  To enable public HTTPS URLs, configure Pangolin:"
+        echo ""
+        echo -e "    1. Open your Pangolin dashboard"
+        echo -e "    2. Go to ${BOLD}Organization → API Keys${NC} and create an API key"
+        echo -e "       (grant it resource management permissions)"
+        echo -e "    3. Note your ${BOLD}org ID${NC}, ${BOLD}domain ID${NC}, and ${BOLD}site ID${NC}"
+        echo -e "       (found in Organization settings, Domains, and Sites)"
+        echo -e "    4. Run:"
+        echo ""
+        echo -e "       ${BOLD}pm config set pangolin.api_key YOUR_KEY${NC}"
+        echo -e "       ${BOLD}pm config set pangolin.org_id YOUR_ORG_ID${NC}"
+        echo -e "       ${BOLD}pm config set pangolin.default_domain_id YOUR_DOMAIN_ID${NC}"
+        echo -e "       ${BOLD}pm config set pangolin.site_id YOUR_SITE_ID${NC}"
+    fi
     echo ""
     echo -e "  ${YELLOW}Note:${NC} Run ${BOLD}source ~/.bashrc${NC} or open a new terminal"
     echo -e "         to apply PATH changes."
@@ -351,6 +464,7 @@ main() {
     setup_user_and_dirs
     migrate_existing
     add_to_path
+    setup_pangolin
     print_success
 }
 

@@ -3,8 +3,10 @@
 Provides helpers for creating, deleting, and querying public resources
 exposed through the Pangolin dashboard API (e.g. ``apps.yacinesahli.com``).
 
-All functions load configuration internally via :func:`load_config` and
-wrap HTTP calls in ``try / except`` so they never propagate network errors.
+All functions load configuration internally via :func:`load_config`.
+
+Functions raise :class:`PangolinError` (or a subclass) on failure so callers
+can decide how to surface the problem.
 """
 
 from __future__ import annotations
@@ -14,6 +16,43 @@ from typing import Any
 import requests
 
 from pocketmanager.core.config import load_config
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class PangolinError(Exception):
+    """Base exception for Pangolin API errors."""
+
+
+class PangolinConfigError(PangolinError):
+    """Raised when Pangolin configuration is incomplete or invalid.
+
+    The ``missing`` attribute contains a list of dot-notation config keys
+    that are empty or unset.
+    """
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        keys = ", ".join(missing)
+        super().__init__(
+            f"Pangolin is not fully configured. Missing: {keys}. "
+            f"Run 'pm config set <key> <value>' for each."
+        )
+
+
+class PangolinAPIError(PangolinError):
+    """Raised when a Pangolin API call fails.
+
+    The ``status_code`` attribute contains the HTTP status (or ``None`` for
+    network-level failures).
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        self.status_code = status_code
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +69,35 @@ def _get_api_headers(config: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _check_config(
+    config: dict[str, Any],
+    *,
+    require_org_id: bool = False,
+    require_domain_id: bool = False,
+    require_site_id: bool = False,
+) -> None:
+    """Validate that required Pangolon config values are set and non-empty.
+
+    Raises :class:`PangolinConfigError` with all missing keys listed.
+    """
+    missing: list[str] = []
+    pangolin_cfg = config.get("pangolin", {})
+
+    if not pangolin_cfg.get("api_url"):
+        missing.append("pangolin.api_url")
+    if not pangolin_cfg.get("api_key"):
+        missing.append("pangolin.api_key")
+    if require_org_id and not pangolin_cfg.get("org_id"):
+        missing.append("pangolin.org_id")
+    if require_domain_id and not pangolin_cfg.get("default_domain_id"):
+        missing.append("pangolin.default_domain_id")
+    if require_site_id and not pangolin_cfg.get("site_id"):
+        missing.append("pangolin.site_id")
+
+    if missing:
+        raise PangolinConfigError(missing)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -43,7 +111,7 @@ def create_resource(
     site_id: int,
     target_ip: str,
     target_port: int,
-) -> dict | None:
+) -> dict:
     """Create a new public resource and configure its target.
 
     Two API calls are made:
@@ -51,18 +119,23 @@ def create_resource(
     1. **Create the resource** — ``PUT /org/{org_id}/resource``
     2. **Set the target** — ``PUT /resource/{resource_id}/target``
 
-    Returns the resource response dict (which includes ``resourceId``), or
-    ``None`` on any failure.
+    Returns the resource response dict (which includes ``resourceId``).
+
+    Raises
+    ------
+    PangolinConfigError
+        If required config values are missing.
+    PangolinAPIError
+        If an API call fails.
     """
     config = load_config()
+    _check_config(config, require_org_id=True, require_domain_id=True, require_site_id=True)
+
     api_url = config.get("pangolin", {}).get("api_url", "")
     headers = _get_api_headers(config)
 
-    if not api_url or not headers.get("Authorization", "").split()[-1]:
-        return None
-
+    # Step 1: Create the resource
     try:
-        # Step 1: Create the resource
         create_resp = requests.put(
             f"{api_url}/org/{org_id}/resource",
             json={
@@ -75,15 +148,26 @@ def create_resource(
             headers=headers,
             timeout=15,
         )
-        create_resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise PangolinAPIError(f"Failed to create Pangolin resource: {exc}") from exc
 
-        resource_data = create_resp.json()
-        resource_id = resource_data.get("resourceId")
+    if not create_resp.ok:
+        raise PangolinAPIError(
+            f"Pangolin API returned {create_resp.status_code} when creating resource: "
+            f"{create_resp.text[:200]}",
+            status_code=create_resp.status_code,
+        )
 
-        if not resource_id:
-            return None
+    resource_data = create_resp.json()
+    resource_id = resource_data.get("resourceId")
 
-        # Step 2: Configure the target
+    if not resource_id:
+        raise PangolinAPIError(
+            "Pangolin API did not return a resourceId in the response.",
+        )
+
+    # Step 2: Configure the target
+    try:
         target_resp = requests.put(
             f"{api_url}/resource/{resource_id}/target",
             json={
@@ -95,12 +179,19 @@ def create_resource(
             headers=headers,
             timeout=15,
         )
-        target_resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise PangolinAPIError(
+            f"Resource created (id={resource_id}) but failed to set target: {exc}"
+        ) from exc
 
-        return resource_data
+    if not target_resp.ok:
+        raise PangolinAPIError(
+            f"Resource created (id={resource_id}) but target config returned "
+            f"{target_resp.status_code}: {target_resp.text[:200]}",
+            status_code=target_resp.status_code,
+        )
 
-    except Exception:
-        return None
+    return resource_data
 
 
 def delete_resource(resource_id: int) -> bool:
