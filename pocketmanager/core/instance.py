@@ -622,20 +622,26 @@ def migrate_existing() -> list[dict]:
             content = service_path.read_text(encoding="utf-8")
             for line in content.splitlines():
                 stripped = line.strip()
-                if stripped.startswith("ExecStart="):
+                # Normalize spaces around '=' for systemd directives
+                # (some service files use "ExecStart = ..." instead of "ExecStart=...")
+                directive, _, value = stripped.partition("=")
+                directive = directive.strip()
+                value = value.strip()
+
+                if directive == "ExecStart":
                     # Parse --http=0.0.0.0:PORT
                     import re as _re
 
-                    port_match = _re.search(r"--http=.*?:(\d+)", stripped)
+                    port_match = _re.search(r"--http=.*?:(\d+)", value)
                     if port_match:
                         port = int(port_match.group(1))
-                elif stripped.startswith("Environment="):
+                elif directive == "Environment":
                     # Remove surrounding quotes
-                    env_str = stripped[len("Environment="):].strip().strip('"')
-                    key, _, value = env_str.partition("=")
-                    env_vars[key] = value
-                elif stripped.startswith("WorkingDirectory="):
-                    working_dir = stripped[len("WorkingDirectory="):].strip()
+                    env_str = value.strip().strip('"')
+                    key, _, val = env_str.partition("=")
+                    env_vars[key] = val
+                elif directive == "WorkingDirectory":
+                    working_dir = value
         except Exception:
             pass
 
@@ -652,6 +658,27 @@ def migrate_existing() -> list[dict]:
         # Regenerate service file with hardened template
         try:
             create_service(name, port, working_dir, env=env_vars or None)
+        except Exception:
+            pass
+
+        # Remove stale vendor service file if it exists (e.g. /usr/lib/systemd/system/...)
+        # Our managed services live in /etc/systemd/system/ which takes precedence.
+        try:
+            vendor_path = Path(f"/usr/lib/systemd/system/pocketbase-{name}.service")
+            if vendor_path.is_file():
+                subprocess.run(
+                    ["sudo", "rm", "-f", str(vendor_path)],
+                    check=True,
+                    capture_output=True,
+                )
+        except Exception:
+            pass
+
+        # Restart the instance so the new hardened service file takes effect
+        try:
+            from pocketmanager.core.systemd import restart_service
+
+            restart_service(name)
         except Exception:
             pass
 

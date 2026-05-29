@@ -222,13 +222,40 @@ def ensure_binary(version: str) -> Path:
 def detect_instance_version(instance_dir: Path) -> str | None:
     """Try to detect the PocketBase version from an instance directory.
 
-    Looks for a zip file matching the pattern
-    ``pocketbase_<VERSION>_linux_<ARCH>.zip`` and extracts the version.
+    First runs ``./pocketbase --version`` to get the actual binary version.
+    Falls back to looking for a zip file matching the pattern
+    ``pocketbase_<VERSION>_linux_<ARCH>.zip``.
     Returns ``None`` if the version cannot be determined.
     """
     if not instance_dir.is_dir():
         return None
 
+    # Try running the binary first — most accurate
+    binary = instance_dir / "pocketbase"
+    if binary.is_file():
+        try:
+            result = subprocess.run(
+                [str(binary), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            # Output: "pocketbase version 0.38.0" (may be preceded by hook logs)
+            for line in reversed(result.stdout.strip().splitlines()):
+                line = line.strip()
+                match = re.search(r"(\d+\.\d+\.\d+)", line)
+                if match:
+                    return match.group(1)
+            # Also check stderr
+            for line in reversed(result.stderr.strip().splitlines()):
+                line = line.strip()
+                match = re.search(r"(\d+\.\d+\.\d+)", line)
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
+
+    # Fallback: pattern match on zip filename
     # Pattern: pocketbase_0.36.9_linux_arm64.zip
     zip_pattern = re.compile(r"^pocketbase_(\d+\.\d+\.\d+)_linux_\w+\.zip$")
     for entry in instance_dir.iterdir():
