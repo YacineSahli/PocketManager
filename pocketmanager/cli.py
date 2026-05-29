@@ -739,36 +739,30 @@ def self_update() -> None:
     from pocketmanager.core import selfupdate as selfupdate_mod
 
     console.print("[bold]Checking for updates...[/bold]")
-    release = selfupdate_mod.check_for_update()
+    update = selfupdate_mod.check_for_update()
 
-    if release is None:
+    if update is None:
         console.print("[bold green]PocketManager is already up to date.[/bold green]")
         return
 
-    tag = release.get("tag_name", "unknown")
-    name = release.get("name", "")
-    published = release.get("published_at", "")
     console.print(f"\n[bold]Update available:[/bold]")
-    console.print(f"  [cyan]Version:[/cyan]  {tag}")
-    if name:
-        console.print(f"  [cyan]Name:[/cyan]     {name}")
-    if published:
-        console.print(f"  [cyan]Published:[/cyan] {published}")
+    console.print(f"  [cyan]Local:[/cyan]  {update['local']}")
+    console.print(f"  [cyan]Remote:[/cyan] {update['remote']}")
 
-    body = release.get("body", "")
-    if body:
-        console.print(f"\n[bold]Release notes:[/bold]")
-        for line in body.splitlines():
+    incoming = update.get("log", "")
+    if incoming:
+        console.print(f"\n[bold]Incoming commits:[/bold]")
+        for line in incoming.splitlines():
             console.print(f"  {line}")
 
-    if not click.confirm("Do you want to update now?", default=True):
+    if not click.confirm("\nDo you want to update now?", default=True):
         console.print("[dim]Update cancelled.[/dim]")
         return
 
-    console.print(f"\n[bold]Updating to {tag}...[/bold]")
-    success = selfupdate_mod.perform_update(release)
+    console.print()
+    success = selfupdate_mod.perform_update()
     if success:
-        console.print(f"\n[bold green]PocketManager updated to {tag}.[/bold green]")
+        console.print("\n[bold green]PocketManager updated successfully.[/bold green]")
     else:
         console.print("[bold red]Update failed. Check the logs for details.[/bold red]")
         sys.exit(1)
