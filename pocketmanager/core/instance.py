@@ -108,6 +108,59 @@ def _get_disk_usage(path: Path) -> str:
         return "unknown"
 
 
+def _create_superadmin(port: int) -> tuple[str, str] | None:
+    """Attempt to create the first superadmin on a fresh PocketBase instance.
+
+    Generates random credentials and creates the admin via the PocketBase
+    REST API.  No authentication is required for the *first* admin creation.
+
+    Returns ``(email, password)`` on success, or ``None`` on failure.
+    """
+    import secrets
+    import string
+    import time
+
+    import requests as _requests
+
+    email = "admin@pocketbase.local"
+    alphabet = string.ascii_letters + string.digits
+    password = "".join(secrets.choice(alphabet) for _ in range(24))
+
+    base_url = f"http://localhost:{port}"
+
+    # Wait for the instance to respond (up to ~30 s)
+    for _ in range(15):
+        try:
+            resp = _requests.get(f"{base_url}/api/health", timeout=2)
+            if resp.status_code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        return None
+
+    payload = {
+        "email": email,
+        "password": password,
+        "passwordConfirm": password,
+    }
+
+    # Try v0.23+ endpoint first, then legacy
+    for endpoint in (
+        f"{base_url}/api/collections/_superusers/records",
+        f"{base_url}/api/admins",
+    ):
+        try:
+            resp = _requests.post(endpoint, json=payload, timeout=10)
+            if resp.ok:
+                return email, password
+        except Exception:
+            continue
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -204,7 +257,28 @@ def create_instance(
     # 11. Start service
     start_service(name)
 
-    # 12. Pangolin integration (optional, non-blocking)
+    # 12. Auto-create superadmin (best effort, non-blocking)
+    admin_email: str | None = None
+    admin_password: str | None = None
+    admin_warning: str | None = None
+    try:
+        creds = _create_superadmin(port)
+        if creds:
+            admin_email, admin_password = creds
+        else:
+            admin_warning = (
+                f"Could not auto-create superadmin. "
+                f"Visit the Admin UI at http://localhost:{port}/_/ "
+                f"to create one manually, then run 'pm credentials {name}'."
+            )
+    except Exception:
+        admin_warning = (
+            f"Could not auto-create superadmin. "
+            f"Visit the Admin UI at http://localhost:{port}/_/ "
+            f"to create one manually, then run 'pm credentials {name}'."
+        )
+
+    # 13. Pangolin integration (optional, non-blocking)
     pangolin_resource_id: str | None = None
     pangolin_warning: str | None = None
     if pangolin:
@@ -219,7 +293,7 @@ def create_instance(
                 suffix = get("pangolin.subdomain_suffix", "")
                 if suffix and not subdomain.endswith(suffix.lstrip(".")):
                     # Ensure exactly one dot between subdomain and suffix
-                    pangolin_subdomain = f"{subdomain}.{suffix.lstrip('.')}" 
+                    pangolin_subdomain = f"{subdomain}.{suffix.lstrip('.')}"
 
             site_id_raw = get("pangolin.site_id", "")
             site_id = int(site_id_raw) if site_id_raw else 0
@@ -241,7 +315,7 @@ def create_instance(
             pangolin_warning = f"Pangolin resource creation failed: {exc}"
             pangolin_resource_id = None
 
-    # 13. Register in state
+    # 14. Register in state
     instance_record: dict[str, Any] = {
         "name": name,
         "port": port,
@@ -252,6 +326,8 @@ def create_instance(
         "env": env or {},
         "pangolin_resource_id": pangolin_resource_id,
         "auto_backup": get("defaults.auto_backups_enabled", True),
+        "superadmin_email": admin_email,
+        "superadmin_password": admin_password,
     }
     state_add_instance(instance_record)
 
@@ -259,6 +335,7 @@ def create_instance(
     result = state_get_instance(name)  # type: ignore[assignment]
     if result is not None:
         result["pangolin_warning"] = pangolin_warning
+        result["admin_warning"] = admin_warning
     return result  # type: ignore[return-value]
 
 

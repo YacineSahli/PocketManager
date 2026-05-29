@@ -319,6 +319,7 @@ def mock_systemd():
         patch.object(systemd_mod, "remove_service", mocks["remove_svc_mock"]),
         patch.object(systemd_mod, "is_active", mocks["active_mock"]),
         patch.object(systemd_mod, "get_status", mocks["status_mock"]),
+        patch.object(instance_mod, "_create_superadmin", return_value=None),
     ]
 
     with ExitStack() as stack:

@@ -65,6 +65,7 @@ def mock_instance_deps(isolated_env):
             },
         ),
         patch("pocketmanager.core.instance.subprocess.run"),
+        patch("pocketmanager.core.instance._create_superadmin", return_value=None),
     ):
         yield
 
