@@ -203,10 +203,42 @@ def create(
         f"[bold]Name:[/bold]     {result.get('name', name)}\n"
         f"[bold]Port:[/bold]     {result.get('port', port)}\n"
         f"[bold]URL:[/bold]      {url}\n"
-        f"[bold]Admin:[/bold]    {url}/_/\n"
         f"[bold]Version:[/bold]  {result.get('version', pb_version or 'latest')}"
     )
+
+    # Show admin UI link only when no auto-created credentials
+    admin_email = result.get("superadmin_email")
+    admin_password = result.get("superadmin_password")
+    if not (admin_email and admin_password):
+        panel_content += f"\n[bold]Admin UI:[/bold]  {url}/_/"
+
     console.print(Panel(panel_content, title="[bold green]Instance Created[/bold green]", border_style="green"))
+
+    # Show auto-generated superadmin credentials
+    if admin_email and admin_password:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold]Email:[/bold]    {admin_email}\n"
+                f"[bold]Password:[/bold] {admin_password}\n\n"
+                f"[dim]These are stored for backup operations. "
+                f"Change with: pm credentials {name}[/dim]",
+                title="[bold yellow]Superadmin Credentials[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
+    # Show warning if auto-creation failed
+    admin_warning = result.get("admin_warning")
+    if admin_warning:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold yellow]Superadmin not auto-created.[/bold yellow]\n\n{admin_warning}",
+                title="[bold yellow]⚠ Superadmin[/bold yellow]",
+                border_style="yellow",
+            )
+        )
 
     # Show Pangolin warning if resource creation was skipped or failed
     pangolin_warning = result.get("pangolin_warning") if result else None

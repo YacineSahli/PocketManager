@@ -75,6 +75,7 @@ def _instance_mocks(fake_binary: Path):
             },
         ),
         patch("pocketmanager.core.instance.subprocess.run"),
+        patch("pocketmanager.core.instance._create_superadmin", return_value=None),
     ]
 
     class _MockContext:
