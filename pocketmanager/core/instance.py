@@ -213,11 +213,19 @@ def create_instance(
         try:
             from pocketmanager.core import pangolin as pangolin_mod  # noqa: F811
 
+            # Apply subdomain suffix (e.g. "testtmp" + ".apps" -> "testtmp.apps")
+            pangolin_subdomain = subdomain
+            if subdomain:
+                suffix = get("pangolin.subdomain_suffix", "")
+                if suffix and not subdomain.endswith(suffix.lstrip(".")):
+                    # Ensure exactly one dot between subdomain and suffix
+                    pangolin_subdomain = f"{subdomain}.{suffix.lstrip('.')}" 
+
             site_id_raw = get("pangolin.site_id", "")
             site_id = int(site_id_raw) if site_id_raw else 0
             result = pangolin_mod.create_resource(
                 name=name,
-                subdomain=subdomain,
+                subdomain=pangolin_subdomain,
                 domain_id=get("pangolin.default_domain_id", ""),
                 org_id=get("pangolin.org_id", ""),
                 site_id=site_id,
