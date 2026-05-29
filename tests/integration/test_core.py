@@ -258,7 +258,7 @@ class TestState:
             assert inst["port"] == port
 
     def test_state_file_permissions(self, isolated_env):
-        """After saving state, instances.json should have 0o600 permissions."""
+        """After saving state, instances.json should have group-readable (0o660) permissions."""
         import stat
 
         from pocketmanager.core.state import add_instance, get_state_path
@@ -267,7 +267,7 @@ class TestState:
 
         mode = os.stat(get_state_path()).st_mode
         perms = stat.S_IMODE(mode)
-        assert perms == 0o600
+        assert perms == 0o660
 
 
 # ---------------------------------------------------------------------------
