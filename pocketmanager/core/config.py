@@ -28,7 +28,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "port_range": {"min": 8090, "max": 8999},
     "pangolin": {
         "dashboard_url": "https://apps.yacinesahli.com",
-        "api_url": "https://apps.yacinesahli.com/api/v1",
+        "api_url": "https://api.apps.yacinesahli.com/v1",
         "api_key": "",
         "org_id": "",
         "default_domain_id": "",
