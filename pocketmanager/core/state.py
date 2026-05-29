@@ -32,6 +32,26 @@ _EMPTY_STATE: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _fix_file_ownership(path: Path) -> None:
+    """Ensure *path* is owned by the same uid:gid as its parent directory.
+
+    This allows both root (via sudo) and the regular user to read/write
+    the state file when ``POCKETMANAGER_HOME`` points to a shared location.
+    """
+    try:
+        parent_stat = path.parent.stat()
+        file_stat = path.stat()
+        if file_stat.st_uid != parent_stat.st_uid or file_stat.st_gid != parent_stat.st_gid:
+            os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
+    except (PermissionError, OSError):
+        pass  # Non-root can't chown — that's fine
+
+
+# ---------------------------------------------------------------------------
 # File locking
 # ---------------------------------------------------------------------------
 
@@ -92,8 +112,9 @@ def save_state(state: dict[str, Any]) -> None:
             json.dump(state, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         os.replace(tmp_path, path)
-        # Restrict to owner-only to protect instance data
-        os.chmod(path, 0o600)
+        # Match parent dir ownership so both root and regular user can access
+        _fix_file_ownership(path)
+        os.chmod(path, 0o660)
     except BaseException:
         try:
             os.unlink(tmp_path)
