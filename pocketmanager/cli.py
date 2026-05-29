@@ -180,6 +180,18 @@ def create(
     )
     console.print(Panel(panel_content, title="[bold green]Instance Created[/bold green]", border_style="green"))
 
+    # Show Pangolin warning if resource creation was skipped or failed
+    pangolin_warning = result.get("pangolin_warning") if result else None
+    if pangolin_warning:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold yellow]Pangolin resource not created.[/bold yellow]\n\n{pangolin_warning}",
+                title="[bold yellow]⚠ Pangolin[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
 
 # ---------------------------------------------------------------------------
 # list / ls

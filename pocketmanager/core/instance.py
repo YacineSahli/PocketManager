@@ -206,28 +206,32 @@ def create_instance(
 
     # 12. Pangolin integration (optional, non-blocking)
     pangolin_resource_id: str | None = None
+    pangolin_warning: str | None = None
     if pangolin:
-        pangolin_configured = bool(get("pangolin.api_key", ""))
-        if pangolin_configured:
-            try:
-                from pocketmanager.core import pangolin as pangolin_mod  # noqa: F811
+        from pocketmanager.core.pangolin import PangolinAPIError, PangolinConfigError
 
-                site_id_raw = get("pangolin.site_id", "")
-                site_id = int(site_id_raw) if site_id_raw else 0
-                result = pangolin_mod.create_resource(
-                    name=name,
-                    subdomain=subdomain,
-                    domain_id=get("pangolin.default_domain_id", ""),
-                    org_id=get("pangolin.org_id", ""),
-                    site_id=site_id,
-                    target_ip=get("pangolin.target_ip", "127.0.0.1"),
-                    target_port=port,
-                )
-                if result:
-                    pangolin_resource_id = result.get("resourceId")
-            except Exception:
-                # Pangolin failure must not block instance creation
-                pangolin_resource_id = None
+        try:
+            from pocketmanager.core import pangolin as pangolin_mod  # noqa: F811
+
+            site_id_raw = get("pangolin.site_id", "")
+            site_id = int(site_id_raw) if site_id_raw else 0
+            result = pangolin_mod.create_resource(
+                name=name,
+                subdomain=subdomain,
+                domain_id=get("pangolin.default_domain_id", ""),
+                org_id=get("pangolin.org_id", ""),
+                site_id=site_id,
+                target_ip=get("pangolin.target_ip", "127.0.0.1"),
+                target_port=port,
+            )
+            pangolin_resource_id = result.get("resourceId")
+        except PangolinConfigError as exc:
+            pangolin_warning = str(exc)
+        except PangolinAPIError as exc:
+            pangolin_warning = f"Pangolin resource creation failed: {exc}"
+        except Exception as exc:
+            pangolin_warning = f"Pangolin resource creation failed: {exc}"
+            pangolin_resource_id = None
 
     # 13. Register in state
     instance_record: dict[str, Any] = {
@@ -244,7 +248,10 @@ def create_instance(
     state_add_instance(instance_record)
 
     # Return a copy with the auto-populated fields (slug, created_at)
-    return state_get_instance(name)  # type: ignore[return-value]
+    result = state_get_instance(name)  # type: ignore[assignment]
+    if result is not None:
+        result["pangolin_warning"] = pangolin_warning
+    return result  # type: ignore[return-value]
 
 
 def remove_instance(
