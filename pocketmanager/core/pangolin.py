@@ -159,6 +159,9 @@ def create_resource(
         )
 
     resource_data = create_resp.json()
+    # Integration API wraps data in {"data": {...}, "success": true, ...}
+    if "data" in resource_data and isinstance(resource_data["data"], dict):
+        resource_data = resource_data["data"]
     resource_id = resource_data.get("resourceId")
 
     if not resource_id:

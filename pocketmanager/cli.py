@@ -42,8 +42,12 @@ def _build_url(instance: dict) -> str:
             from pocketmanager.core.config import get as _cfg_get
 
             base = _cfg_get("pangolin.default_domain", "")
+            suffix = _cfg_get("pangolin.subdomain_suffix", "")
+            display_subdomain = subdomain
+            if suffix and not subdomain.endswith(suffix.lstrip(".")):
+                display_subdomain = f"{subdomain}.{suffix.lstrip('.')}"
             if base:
-                return f"https://{subdomain}.{base}"
+                return f"https://{display_subdomain}.{base}"
         except Exception:
             pass
         return f"https://{subdomain}.example.com"
