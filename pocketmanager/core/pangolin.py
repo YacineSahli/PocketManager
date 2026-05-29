@@ -221,6 +221,69 @@ def delete_resource(resource_id: int) -> bool:
         return False
 
 
+def list_resources(org_id: str) -> list[dict]:
+    """List all resources in the given organisation.
+
+    Returns a list of resource objects, or an empty list on failure.
+    """
+    config = load_config()
+    api_url = config.get("pangolin", {}).get("api_url", "")
+    headers = _get_api_headers(config)
+
+    if not api_url:
+        return []
+
+    resources: list[dict] = []
+    page = 1
+    try:
+        while True:
+            resp = requests.get(
+                f"{api_url}/org/{org_id}/resources",
+                params={"page": page, "pageSize": 100},
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data", body)
+            page_resources = data.get("resources", [])
+            resources.extend(page_resources)
+            pagination = data.get("pagination", {})
+            total = pagination.get("total", len(page_resources))
+            page_size = pagination.get("pageSize", 100)
+            if page * page_size >= total or not page_resources:
+                break
+            page += 1
+        return resources
+    except Exception:
+        return []
+
+
+def set_resource_password(resource_id: int, password: str) -> bool:
+    """Set a password for authentication on a Pangolin resource.
+
+    Returns ``True`` on success, ``False`` on any failure.
+    """
+    config = load_config()
+    api_url = config.get("pangolin", {}).get("api_url", "")
+    headers = _get_api_headers(config)
+
+    if not api_url:
+        return False
+
+    try:
+        resp = requests.post(
+            f"{api_url}/resource/{resource_id}/password",
+            json={"password": password},
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
 def list_domains(org_id: str) -> list[dict]:
     """List all domains available in the given organisation.
 

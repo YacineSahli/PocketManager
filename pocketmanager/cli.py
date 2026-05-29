@@ -886,6 +886,123 @@ def migrate_existing() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _setup_dashboard_pangolin(config: dict, dash_port: int, daemon: bool) -> None:
+    """Ensure a Pangolin public resource exists for the dashboard (interactive).
+
+    If the resource already exists (tracked via config), skip silently.
+    Otherwise, prompt the user for a name and create the resource with
+    password authentication enabled.
+    """
+    from pocketmanager.core.config import save_config
+    from pocketmanager.core.pangolin import (
+        PangolinAPIError,
+        PangolinConfigError,
+        create_resource,
+        list_resources,
+        set_resource_password,
+    )
+
+    # Already set up — nothing to do
+    if config.get("dashboard_pangolin_resource_id"):
+        return
+
+    pangolin_cfg = config.get("pangolin", {})
+    api_key = pangolin_cfg.get("api_key", "")
+    org_id = pangolin_cfg.get("org_id", "")
+    api_url = pangolin_cfg.get("api_url", "")
+
+    # Pangolin not configured — skip silently
+    if not (api_key and org_id and api_url):
+        return
+
+    # In daemon mode we can't prompt — skip
+    if daemon:
+        return
+
+    # Check if a resource named "pocketmanager" (or similar) already exists
+    default_name = "pocketmanager"
+    try:
+        existing = list_resources(org_id)
+        existing_names = {r.get("name", "") for r in existing}
+        # Find a name that doesn't conflict
+        if default_name in existing_names:
+            n = 2
+            while f"{default_name}-{n}" in existing_names:
+                n += 1
+            default_name = f"{default_name}-{n}"
+    except Exception:
+        pass
+
+    console.print()
+    console.print(
+        "[bold cyan]Pangolin is configured but the dashboard has no public resource yet.[/bold cyan]"
+    )
+    console.print(
+        "A public resource will expose the dashboard through Pangolin with password authentication."
+    )
+
+    resource_name = click.prompt(
+        "Resource name for the dashboard",
+        default=default_name,
+    )
+    if not resource_name.strip():
+        console.print("[dim]Skipping Pangolin resource creation.[/dim]")
+        return
+
+    resource_name = resource_name.strip()
+
+    # Determine subdomain
+    subdomain = resource_name
+    suffix = pangolin_cfg.get("subdomain_suffix", "")
+    if suffix and not subdomain.endswith(suffix.lstrip(".")):
+        subdomain = f"{subdomain}.{suffix.lstrip('.')}"
+
+    domain_id = pangolin_cfg.get("default_domain_id", "")
+    site_id_raw = pangolin_cfg.get("site_id", "")
+    site_id = int(site_id_raw) if site_id_raw else 0
+    target_ip = pangolin_cfg.get("target_ip", "127.0.0.1")
+
+    try:
+        result = create_resource(
+            name=resource_name,
+            subdomain=subdomain,
+            domain_id=domain_id,
+            org_id=org_id,
+            site_id=site_id,
+            target_ip=target_ip,
+            target_port=dash_port,
+        )
+    except (PangolinConfigError, PangolinAPIError) as exc:
+        console.print(f"[bold red]Failed to create Pangolin resource: {exc}[/bold red]")
+        console.print("[dim]You can set it up manually later.[/dim]")
+        return
+
+    resource_id = result.get("resourceId")
+    if not resource_id:
+        console.print("[bold yellow]Resource created but no ID returned — skipping auth setup.[/bold yellow]")
+        return
+
+    # Enable password authentication on the resource
+    dashboard_password = config.get("dashboard_password", "")
+    if dashboard_password:
+        if not set_resource_password(resource_id, dashboard_password):
+            console.print(
+                "[bold yellow]Resource created but failed to set password authentication.[/bold yellow]"
+            )
+            console.print("[dim]Set it manually in the Pangolin dashboard.[/dim]")
+
+    # Save the resource ID so we don't recreate on next start
+    config["dashboard_pangolin_resource_id"] = str(resource_id)
+    save_config(config)
+
+    domain_name = pangolin_cfg.get("default_domain", "")
+    full_domain = f"{subdomain}.{domain_name}" if domain_name else subdomain
+    console.print(
+        f"[bold green]Pangolin resource '{resource_name}' created at https://{full_domain}[/bold green]"
+    )
+    console.print("[dim]Password authentication is enabled via Pangolin.[/dim]")
+
+
 @cli.command()
 @click.option("--port", "dash_port", type=int, default=None, help="Dashboard HTTP port.")
 @click.option("--daemon", is_flag=True, default=False, help="Run in background.")
@@ -935,6 +1052,9 @@ def dashboard(dash_port: int | None, daemon: bool, stop: bool) -> None:
         config["dashboard_password"] = new_password
         save_config(config)
         console.print("[bold green]Dashboard password saved.[/bold green]")
+
+    # Optionally create a Pangolin public resource for the dashboard
+    _setup_dashboard_pangolin(config, dash_port, daemon)  # type: ignore[arg-type]
 
     try:
         from pocketmanager.dashboard.app import create_app

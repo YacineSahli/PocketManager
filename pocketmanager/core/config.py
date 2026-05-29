@@ -25,6 +25,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "cache_dir": "/home/ubuntu/.pocketmanager/cache",
     "dashboard_port": 8888,
     "dashboard_password": "",
+    "dashboard_pangolin_resource_id": "",
     "port_range": {"min": 8090, "max": 8999},
     "pangolin": {
         "dashboard_url": "https://apps.yacinesahli.com",
