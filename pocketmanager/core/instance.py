@@ -674,6 +674,18 @@ def migrate_existing() -> list[dict]:
         except Exception:
             pass
 
+        # Fix ownership of pb_data so the hardened service (User=pocketbase) can write
+        try:
+            pb_data = Path(working_dir) / "pb_data"
+            if pb_data.is_dir():
+                subprocess.run(
+                    ["sudo", "chown", "-R", "pocketbase:pocketbase", str(pb_data)],
+                    check=True,
+                    capture_output=True,
+                )
+        except Exception:
+            pass
+
         # Restart the instance so the new hardened service file takes effect
         try:
             from pocketmanager.core.systemd import restart_service
