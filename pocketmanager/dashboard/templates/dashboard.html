@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PocketManager Dashboard</title>
+<style>
+  /* ── Reset & Base ───────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg-primary: #0f1117;
+    --bg-secondary: #1a1d27;
+    --bg-card: #1e2130;
+    --bg-card-hover: #252839;
+    --bg-input: #12141c;
+    --bg-modal: #161822;
+    --border: #2a2d3e;
+    --border-light: #353849;
+    --text-primary: #e4e6f0;
+    --text-secondary: #8b8fa3;
+    --text-muted: #5c6078;
+    --accent-blue: #5b8def;
+    --accent-blue-hover: #4a7ade;
+    --accent-green: #4ade80;
+    --accent-green-dim: #166534;
+    --accent-red: #f87171;
+    --accent-red-dim: #7f1d1d;
+    --accent-yellow: #facc15;
+    --accent-orange: #fb923c;
+    --accent-purple: #a78bfa;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.35);
+    --transition: 0.2s ease;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Scrollbar ──────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+  /* ── Navbar ─────────────────────────────────────────────────────── */
+  .navbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 60px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .navbar-brand svg {
+    width: 28px;
+    height: 28px;
+    color: var(--accent-blue);
+  }
+
+  .navbar-title {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+
+  .navbar-title span {
+    color: var(--accent-blue);
+  }
+
+  .navbar-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .navbar-stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .stat-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    flex-shrink: 0;
+  }
+
+  .stat-dot.offline { background: var(--text-muted); }
+
+  /* ── Toolbar ────────────────────────────────────────────────────── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px 0;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+
+  .btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-light);
+  }
+
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-blue-hover);
+    border-color: var(--accent-blue-hover);
+  }
+
+  .btn-danger {
+    background: transparent;
+    border-color: var(--accent-red);
+    color: var(--accent-red);
+  }
+
+  .btn-danger:hover {
+    background: var(--accent-red);
+    color: #fff;
+  }
+
+  .btn-success {
+    background: transparent;
+    border-color: var(--accent-green);
+    color: var(--accent-green);
+  }
+
+  .btn-success:hover {
+    background: var(--accent-green);
+    color: #000;
+  }
+
+  .btn-sm {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .btn-icon {
+    padding: 6px;
+    min-width: 32px;
+    justify-content: center;
+  }
+
+  /* ── Search ─────────────────────────────────────────────────────── */
+  .search-box {
+    position: relative;
+  }
+
+  .search-box input {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px 8px 34px;
+    color: var(--text-primary);
+    font-size: 13px;
+    width: 220px;
+    outline: none;
+    transition: border-color var(--transition);
+  }
+
+  .search-box input:focus {
+    border-color: var(--accent-blue);
+  }
+
+  .search-box input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .search-box svg {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  /* ── Instance Grid ──────────────────────────────────────────────── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+    padding: 20px 24px;
+  }
+
+  /* ── Card ───────────────────────────────────────────────────────── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: all var(--transition);
+    overflow: hidden;
+  }
+
+  .card:hover {
+    border-color: var(--border-light);
+    box-shadow: var(--shadow);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .card-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .instance-name {
+    font-size: 15px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .card-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .status-badge .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+
+  .status-running {
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--accent-green);
+  }
+  .status-running .dot {
+    background: var(--accent-green);
+    box-shadow: 0 0 6px var(--accent-green);
+    animation: pulse-green 2s infinite;
+  }
+
+  .status-stopped {
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--accent-red);
+  }
+  .status-stopped .dot { background: var(--accent-red); }
+
+  .status-unknown {
+    background: rgba(92, 96, 120, 0.15);
+    color: var(--text-muted);
+  }
+  .status-unknown .dot { background: var(--text-muted); }
+
+  @keyframes pulse-green {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 0 18px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .meta-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .meta-label {
+    color: var(--text-muted);
+  }
+
+  .card-actions {
+    display: flex;
+    gap: 6px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  /* ── Card Expanded Details ──────────────────────────────────────── */
+  .card-details {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+  }
+
+  .card-details.open {
+    max-height: 800px;
+  }
+
+  .card-details-inner {
+    padding: 0 18px 14px;
+  }
+
+  .detail-section {
+    margin-top: 12px;
+  }
+
+  .detail-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .env-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .env-item {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  }
+
+  .env-key { color: var(--accent-purple); }
+  .env-val { color: var(--text-secondary); word-break: break-all; }
+
+  .backup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .backup-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+
+  .backup-item-key {
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .backup-item-meta {
+    display: flex;
+    gap: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  .health-result {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
+
+  .health-healthy {
+    border-left: 3px solid var(--accent-green);
+  }
+
+  .health-unhealthy {
+    border-left: 3px solid var(--accent-red);
+  }
+
+  .no-data {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 4px 0;
+  }
+
+  /* ── Empty State ────────────────────────────────────────────────── */
+  .empty-state {
+    text-align: center;
+    padding: 80px 24px;
+    grid-column: 1 / -1;
+  }
+
+  .empty-state svg {
+    width: 64px;
+    height: 64px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  .empty-state h3 {
+    font-size: 18px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .empty-state p {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+
+  /* ── Modal ──────────────────────────────────────────────────────── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .modal-overlay.active {
+    display: flex;
+  }
+
+  .modal {
+    background: var(--bg-modal);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 520px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: color var(--transition);
+  }
+
+  .modal-close:hover { color: var(--text-primary); }
+
+  .modal-body {
+    padding: 20px;
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── Form ───────────────────────────────────────────────────────── */
+  .form-group {
+    margin-bottom: 16px;
+  }
+
+  .form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+
+  .form-group label .required {
+    color: var(--accent-red);
+  }
+
+  .form-group input,
+  .form-group select,
+  .form-group textarea {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    transition: border-color var(--transition);
+  }
+
+  .form-group input:focus,
+  .form-group select:focus,
+  .form-group textarea:focus {
+    border-color: var(--accent-blue);
+  }
+
+  .form-group textarea {
+    min-height: 60px;
+    resize: vertical;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 12px;
+  }
+
+  .form-group .hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .form-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .form-check input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-blue);
+  }
+
+  /* ── Logs Modal ─────────────────────────────────────────────────── */
+  .logs-content {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    max-height: 50vh;
+    overflow-y: auto;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-secondary);
+  }
+
+  .logs-content:empty::after {
+    content: "No logs available.";
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* ── Toast Notifications ────────────────────────────────────────── */
+  .toast-container {
+    position: fixed;
+    top: 72px;
+    right: 20px;
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+    animation: slide-in 0.3s ease, fade-out 0.3s ease 2.7s forwards;
+    max-width: 380px;
+  }
+
+  .toast-success { border-left: 3px solid var(--accent-green); }
+  .toast-error { border-left: 3px solid var(--accent-red); }
+  .toast-info { border-left: 3px solid var(--accent-blue); }
+
+  @keyframes slide-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  @keyframes fade-out {
+    to { opacity: 0; transform: translateY(-10px); }
+  }
+
+  /* ── Loading Spinner ────────────────────────────────────────────── */
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .loading-overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    grid-column: 1 / -1;
+  }
+
+  /* ── Responsive ─────────────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .navbar { padding: 0 16px; }
+    .navbar-info { display: none; }
+    .toolbar { padding: 16px 16px 0; }
+    .grid { padding: 16px; grid-template-columns: 1fr; }
+    .search-box input { width: 160px; }
+    .form-row { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 480px) {
+    .toolbar-left { flex-direction: column; align-items: stretch; }
+    .toolbar-right { flex-wrap: wrap; }
+    .btn { font-size: 12px; padding: 7px 12px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Navbar ──────────────────────────────────────────────────────── -->
+<nav class="navbar">
+  <div class="navbar-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+    </svg>
+    <div class="navbar-title">Pocket<span>Manager</span></div>
+  </div>
+  <div class="navbar-info">
+    <div class="navbar-stat">
+      <span class="stat-dot" id="systemDot"></span>
+      <span id="instanceCount">0 instances</span>
+    </div>
+    <div class="navbar-stat" id="lastRefresh"></div>
+  </div>
+</nav>
+
+<!-- ── Toolbar ────────────────────────────────────────────────────── -->
+<div class="toolbar">
+  <div class="toolbar-left">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input type="text" id="searchInput" placeholder="Search instances...">
+    </div>
+  </div>
+  <div class="toolbar-right">
+    <button class="btn" onclick="healthCheck()" title="Check health of all instances">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+      </svg>
+      Health Check
+    </button>
+    <button class="btn btn-primary" onclick="openCreateModal()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+      Create Instance
+    </button>
+  </div>
+</div>
+
+<!-- ── Instance Grid ──────────────────────────────────────────────── -->
+<div class="grid" id="instanceGrid">
+  <div class="loading-overlay"><div class="spinner"></div></div>
+</div>
+
+<!-- ── Toast Container ────────────────────────────────────────────── -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ── Create Instance Modal ──────────────────────────────────────── -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Create Instance</h2>
+      <button class="modal-close" onclick="closeCreateModal()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Name <span class="required">*</span></label>
+        <input type="text" id="createName" placeholder="my-instance" autocomplete="off">
+        <div class="hint">Lowercase letters, digits, and hyphens only. Max 64 chars.</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="createPort" placeholder="Auto-assign">
+          <div class="hint">Leave empty for auto-assignment.</div>
+        </div>
+        <div class="form-group">
+          <label>Version</label>
+          <input type="text" id="createVersion" placeholder="Latest">
+          <div class="hint">Leave empty for latest release.</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Subdomain</label>
+          <input type="text" id="createSubdomain" placeholder="myapp">
+        </div>
+        <div class="form-group">
+          <label>Domain</label>
+          <input type="text" id="createDomain" placeholder="example.com">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Environment Variables</label>
+        <textarea id="createEnv" placeholder="KEY=value (one per line)"></textarea>
+        <div class="hint">One KEY=value per line.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-check">
+          <input type="checkbox" id="createPangolin" checked>
+          Register with Pangolin
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeCreateModal()">Cancel</button>
+      <button class="btn btn-primary" id="createSubmitBtn" onclick="createInstance()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Logs Modal ─────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="logsModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="logsTitle">Logs</h2>
+      <button class="modal-close" onclick="closeLogsModal()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="logs-content" id="logsContent"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeLogsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Remove Confirm Modal ───────────────────────────────────────── -->
+<div class="modal-overlay" id="removeModal">
+  <div class="modal" style="max-width: 400px;">
+    <div class="modal-header">
+      <h2>Remove Instance</h2>
+      <button class="modal-close" onclick="closeRemoveModal()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:14px; color:var(--text-secondary); margin-bottom:12px;">
+        Are you sure you want to remove <strong id="removeInstanceName" style="color:var(--text-primary)"></strong>?
+        This action cannot be undone.
+      </p>
+      <label class="form-check">
+        <input type="checkbox" id="removeKeepData">
+        Keep data on disk
+      </label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeRemoveModal()">Cancel</button>
+      <button class="btn btn-danger" id="removeConfirmBtn" onclick="confirmRemove()">Remove</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let allInstances = [];
+let expandedCards = new Set();
+let pendingRemoveName = null;
+let refreshInterval = null;
+
+// ── API Helpers ────────────────────────────────────────────────────
+async function api(path, options = {}) {
+  const url = '/api' + path;
+  const resp = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...options.headers },
+    ...options,
+  });
+  if (resp.status === 401) {
+    showToast('Authentication required', 'error');
+    throw new Error('Unauthorized');
+  }
+  return resp;
+}
+
+// ── Instance Fetching ──────────────────────────────────────────────
+async function fetchInstances() {
+  try {
+    const resp = await api('/instances');
+    const data = await resp.json();
+    allInstances = data.instances || [];
+    renderGrid();
+    updateStats();
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast('Failed to load instances', 'error');
+    }
+  }
+}
+
+// ── Render Grid ────────────────────────────────────────────────────
+function renderGrid() {
+  const grid = document.getElementById('instanceGrid');
+  const search = document.getElementById('searchInput').value.toLowerCase().trim();
+
+  const filtered = allInstances.filter(inst => {
+    if (!search) return true;
+    return (inst.name || '').toLowerCase().includes(search) ||
+           (inst.version || '').toLowerCase().includes(search) ||
+           String(inst.port || '').includes(search);
+  });
+
+  if (filtered.length === 0) {
+    if (allInstances.length === 0) {
+      grid.innerHTML = `
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <h3>No instances yet</h3>
+          <p>Create your first PocketBase instance to get started.</p>
+          <button class="btn btn-primary" onclick="openCreateModal()">Create Instance</button>
+        </div>`;
+    } else {
+      grid.innerHTML = `
+        <div class="empty-state">
+          <h3>No matches found</h3>
+          <p>No instances match your search query.</p>
+        </div>`;
+    }
+    return;
+  }
+
+  grid.innerHTML = filtered.map(inst => {
+    const isActive = inst.active === true;
+    const statusClass = isActive ? 'running' : (inst.active === false ? 'stopped' : 'unknown');
+    const statusLabel = isActive ? 'Running' : (inst.active === false ? 'Stopped' : 'Unknown');
+    const isExpanded = expandedCards.has(inst.name);
+    const url = buildUrl(inst);
+
+    return `
+      <div class="card" data-name="${escHtml(inst.name)}">
+        <div class="card-header" onclick="toggleCard('${escAttr(inst.name)}')">
+          <div class="card-header-left">
+            <div class="instance-name">${escHtml(inst.name)}</div>
+          </div>
+          <div class="card-header-right">
+            <span class="status-badge status-${statusClass}">
+              <span class="dot"></span>
+              ${statusLabel}
+            </span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"
+              style="transform:rotate(${isExpanded ? 180 : 0}deg);transition:transform 0.2s ease;color:var(--text-muted)">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="card-meta">
+          <span class="meta-item">
+            <span class="meta-label">Port:</span>
+            <span>${inst.port || '-'}</span>
+          </span>
+          <span class="meta-item">
+            <span class="meta-label">Version:</span>
+            <span>${escHtml(inst.version || 'unknown')}</span>
+          </span>
+          ${url ? `<span class="meta-item"><span class="meta-label">URL:</span><a href="${escAttr(url)}" target="_blank" rel="noopener" style="color:var(--accent-blue);text-decoration:none">${escHtml(url)}</a></span>` : ''}
+        </div>
+
+        <div class="card-details${isExpanded ? ' open' : ''}" id="details-${escAttr(inst.name)}">
+          <div class="card-details-inner">
+            ${renderDetails(inst)}
+          </div>
+        </div>
+
+        <div class="card-actions">
+          ${isActive
+            ? `<button class="btn btn-sm" onclick="event.stopPropagation();stopInstance('${escAttr(inst.name)}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="12" height="16" rx="1"/></svg>
+                Stop
+              </button>
+              <button class="btn btn-sm" onclick="event.stopPropagation();restartInstance('${escAttr(inst.name)}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+                Restart
+              </button>`
+            : `<button class="btn btn-sm btn-success" onclick="event.stopPropagation();startInstance('${escAttr(inst.name)}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Start
+              </button>`
+          }
+          <button class="btn btn-sm" onclick="event.stopPropagation();viewLogs('${escAttr(inst.name)}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Logs
+          </button>
+          <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="event.stopPropagation();openRemoveModal('${escAttr(inst.name)}')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Remove
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderDetails(inst) {
+  const env = inst.env || {};
+  const envKeys = Object.keys(env);
+
+  return `
+    <div class="detail-section">
+      <div class="detail-section-title">Health & Backups</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="event.stopPropagation();fetchHealthDetail('${escAttr(inst.name)}')">
+          Check Health
+        </button>
+        <button class="btn btn-sm" onclick="event.stopPropagation();fetchBackups('${escAttr(inst.name)}')">
+          Load Backups
+        </button>
+        <button class="btn btn-sm" onclick="event.stopPropagation();createBackup('${escAttr(inst.name)}')">
+          Create Backup
+        </button>
+      </div>
+      <div id="health-${escAttr(inst.name)}" style="margin-top:10px"></div>
+      <div id="backups-${escAttr(inst.name)}" style="margin-top:10px"></div>
+    </div>
+
+    ${envKeys.length > 0 ? `
+    <div class="detail-section">
+      <div class="detail-section-title">Environment Variables</div>
+      <div class="env-list">
+        ${envKeys.map(k => `<div class="env-item"><span class="env-key">${escHtml(k)}</span><span>=</span><span class="env-val">${escHtml(env[k])}</span></div>`).join('')}
+      </div>
+    </div>` : `
+    <div class="detail-section">
+      <div class="detail-section-title">Environment Variables</div>
+      <div class="no-data">No environment variables configured.</div>
+    </div>`}
+
+    ${inst.created_at ? `
+    <div class="detail-section">
+      <div class="detail-section-title">Info</div>
+      <div style="font-size:12px;color:var(--text-secondary)">
+        Created: ${escHtml(inst.created_at)}
+        ${inst.pangolin_resource_id ? '&nbsp;&bull;&nbsp; Pangolin: <span style="color:var(--accent-green)">Linked</span>' : ''}
+      </div>
+    </div>` : ''}
+  `;
+}
+
+// ── Card Toggle ────────────────────────────────────────────────────
+function toggleCard(name) {
+  if (expandedCards.has(name)) {
+    expandedCards.delete(name);
+  } else {
+    expandedCards.add(name);
+  }
+  renderGrid();
+}
+
+// ── Build URL ──────────────────────────────────────────────────────
+function buildUrl(inst) {
+  if (inst.domain) return 'https://' + inst.domain;
+  if (inst.subdomain) return 'https://' + inst.subdomain + '.app';
+  if (inst.port) return 'http://localhost:' + inst.port;
+  return null;
+}
+
+// ── Update Stats ───────────────────────────────────────────────────
+function updateStats() {
+  const running = allInstances.filter(i => i.active).length;
+  const total = allInstances.length;
+  document.getElementById('instanceCount').textContent = `${total} instance${total !== 1 ? 's' : ''}${running > 0 ? ` (${running} running)` : ''}`;
+  document.getElementById('systemDot').className = 'stat-dot' + (running > 0 ? '' : ' offline');
+  document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
+}
+
+// ── Instance Actions ───────────────────────────────────────────────
+async function startInstance(name) {
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/start`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(`${name} started`, 'success');
+      setTimeout(fetchInstances, 500);
+    } else {
+      showToast(`Failed to start ${name}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Failed to start ${name}`, 'error');
+  }
+}
+
+async function stopInstance(name) {
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/stop`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(`${name} stopped`, 'success');
+      setTimeout(fetchInstances, 500);
+    } else {
+      showToast(`Failed to stop ${name}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Failed to stop ${name}`, 'error');
+  }
+}
+
+async function restartInstance(name) {
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/restart`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(`${name} restarted`, 'success');
+      setTimeout(fetchInstances, 1500);
+    } else {
+      showToast(`Failed to restart ${name}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Failed to restart ${name}`, 'error');
+  }
+}
+
+// ── Remove Instance ────────────────────────────────────────────────
+function openRemoveModal(name) {
+  pendingRemoveName = name;
+  document.getElementById('removeInstanceName').textContent = name;
+  document.getElementById('removeKeepData').checked = false;
+  document.getElementById('removeModal').classList.add('active');
+}
+
+function closeRemoveModal() {
+  document.getElementById('removeModal').classList.remove('active');
+  pendingRemoveName = null;
+}
+
+async function confirmRemove() {
+  if (!pendingRemoveName) return;
+  const name = pendingRemoveName;
+  const keepData = document.getElementById('removeKeepData').checked;
+  closeRemoveModal();
+
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ keep_data: keepData, remove_pangolin: true }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      showToast(data.error, 'error');
+    } else {
+      showToast(`${name} removed`, 'success');
+      expandedCards.delete(name);
+      fetchInstances();
+    }
+  } catch (e) {
+    showToast(`Failed to remove ${name}`, 'error');
+  }
+}
+
+// ── Create Instance ────────────────────────────────────────────────
+function openCreateModal() {
+  document.getElementById('createName').value = '';
+  document.getElementById('createPort').value = '';
+  document.getElementById('createVersion').value = '';
+  document.getElementById('createSubdomain').value = '';
+  document.getElementById('createDomain').value = '';
+  document.getElementById('createEnv').value = '';
+  document.getElementById('createPangolin').checked = true;
+  document.getElementById('createModal').classList.add('active');
+  setTimeout(() => document.getElementById('createName').focus(), 100);
+}
+
+function closeCreateModal() {
+  document.getElementById('createModal').classList.remove('active');
+}
+
+async function createInstance() {
+  const name = document.getElementById('createName').value.trim();
+  if (!name) {
+    showToast('Instance name is required', 'error');
+    return;
+  }
+
+  const portRaw = document.getElementById('createPort').value.trim();
+  const port = portRaw ? parseInt(portRaw, 10) : null;
+
+  const version = document.getElementById('createVersion').value.trim() || null;
+  const subdomain = document.getElementById('createSubdomain').value.trim() || null;
+  const domain = document.getElementById('createDomain').value.trim() || null;
+  const pangolin = document.getElementById('createPangolin').checked;
+
+  // Parse env
+  const envText = document.getElementById('createEnv').value.trim();
+  const env = {};
+  if (envText) {
+    for (const line of envText.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        env[trimmed.substring(0, eqIdx).trim()] = trimmed.substring(eqIdx + 1).trim();
+      }
+    }
+  }
+
+  const btn = document.getElementById('createSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    const resp = await api('/instances', {
+      method: 'POST',
+      body: JSON.stringify({ name, port, version, subdomain, domain, env, pangolin }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      showToast(data.error, 'error');
+    } else {
+      showToast(`Instance "${name}" created`, 'success');
+      closeCreateModal();
+      fetchInstances();
+    }
+  } catch (e) {
+    showToast('Failed to create instance', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
+}
+
+// ── Logs ───────────────────────────────────────────────────────────
+async function viewLogs(name) {
+  document.getElementById('logsTitle').textContent = `Logs: ${name}`;
+  document.getElementById('logsContent').textContent = 'Loading...';
+  document.getElementById('logsModal').classList.add('active');
+
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/logs?lines=200`);
+    const data = await resp.json();
+    document.getElementById('logsContent').textContent = data.logs || 'No logs available.';
+  } catch (e) {
+    document.getElementById('logsContent').textContent = 'Failed to load logs.';
+  }
+}
+
+function closeLogsModal() {
+  document.getElementById('logsModal').classList.remove('active');
+}
+
+// ── Health Check (all) ─────────────────────────────────────────────
+async function healthCheck() {
+  showToast('Running health checks...', 'info');
+  try {
+    const resp = await api('/health');
+    const data = await resp.json();
+    const results = data.results || [];
+
+    // Update card statuses based on health data
+    const healthMap = {};
+    for (const r of results) {
+      healthMap[r.name] = r;
+    }
+
+    for (const inst of allInstances) {
+      const h = healthMap[inst.name];
+      if (h) {
+        inst._health = h;
+      }
+    }
+
+    let healthyCount = 0;
+    let totalChecked = results.length;
+
+    for (const r of results) {
+      if (r.healthy) healthyCount++;
+    }
+
+    renderGrid();
+    showToast(`Health check complete: ${healthyCount}/${totalChecked} healthy`, healthyCount === totalChecked ? 'success' : 'error');
+  } catch (e) {
+    showToast('Health check failed', 'error');
+  }
+}
+
+// ── Health Check (single instance) ─────────────────────────────────
+async function fetchHealthDetail(name) {
+  const el = document.getElementById(`health-${name}`);
+  if (!el) return;
+  el.innerHTML = '<div class="spinner" style="margin:8px 0"></div>';
+
+  try {
+    // We use the health endpoint for all but filter for the specific instance
+    const resp = await api('/health');
+    const data = await resp.json();
+    const result = (data.results || []).find(r => r.name === name);
+
+    if (!result) {
+      el.innerHTML = '<div class="no-data">No health data available.</div>';
+      return;
+    }
+
+    if (result.healthy) {
+      el.innerHTML = `
+        <div class="health-result health-healthy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <span style="color:var(--accent-green)">Healthy</span>
+          <span style="color:var(--text-muted);margin-left:auto">${result.response_time_ms != null ? result.response_time_ms + 'ms' : ''}</span>
+        </div>`;
+    } else {
+      el.innerHTML = `
+        <div class="health-result health-unhealthy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+          <span style="color:var(--accent-red)">Unhealthy</span>
+          ${result.error ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px">${escHtml(result.error)}</span>` : ''}
+        </div>`;
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="no-data">Health check failed.</div>';
+  }
+}
+
+// ── Backups ────────────────────────────────────────────────────────
+async function fetchBackups(name) {
+  const el = document.getElementById(`backups-${name}`);
+  if (!el) return;
+  el.innerHTML = '<div class="spinner" style="margin:8px 0"></div>';
+
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/backups`);
+    const data = await resp.json();
+    const backups = data.backups || [];
+
+    if (backups.length === 0) {
+      el.innerHTML = '<div class="no-data">No backups found.</div>';
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="detail-section-title" style="margin-bottom:6px">Backups (${backups.length})</div>
+      <div class="backup-list">
+        ${backups.map(b => `
+          <div class="backup-item">
+            <span class="backup-item-key">${escHtml(b.key || 'backup')}</span>
+            <span class="backup-item-meta">
+              ${b.modified ? `<span>${escHtml(b.modified)}</span>` : ''}
+              ${b.size ? `<span>${escHtml(b.size)}</span>` : ''}
+            </span>
+          </div>
+        `).join('')}
+      </div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="no-data">Failed to load backups.</div>';
+  }
+}
+
+async function createBackup(name) {
+  showToast(`Creating backup for ${name}...`, 'info');
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/backup`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(`Backup created for ${name}`, 'success');
+      // Refresh backups list
+      fetchBackups(name);
+    } else {
+      showToast(`Failed to create backup for ${name}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Failed to create backup for ${name}`, 'error');
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────────────
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const icons = {
+    success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    error: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  };
+
+  toast.innerHTML = (icons[type] || icons.info) + `<span>${escHtml(message)}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    if (toast.parentNode) toast.parentNode.removeChild(toast);
+  }, 3000);
+}
+
+// ── Utilities ──────────────────────────────────────────────────────
+function escHtml(str) {
+  if (str == null) return '';
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+function escAttr(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Search ─────────────────────────────────────────────────────────
+document.getElementById('searchInput').addEventListener('input', () => {
+  renderGrid();
+});
+
+// ── Modal close on overlay click ───────────────────────────────────
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      overlay.classList.remove('active');
+    }
+  });
+});
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+  }
+});
+
+// ── Auto-refresh ───────────────────────────────────────────────────
+function startAutoRefresh() {
+  refreshInterval = setInterval(fetchInstances, 30000);
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+fetchInstances().then(startAutoRefresh);
+</script>
+</body>
+</html>
