@@ -26,7 +26,8 @@ import requests
 # PocketBase changed the superuser auth endpoint between versions.
 # We try the newer endpoint first and fall back to the legacy one.
 _AUTH_ENDPOINTS = (
-    "/api/collections/superusers/auth-with-password",  # v0.23+
+    "/api/collections/_superusers/auth-with-password",  # v0.23+
+    "/api/collections/superusers/auth-with-password",   # v0.23 alt
     "/api/admins/auth-with-password",                   # v0.22 and earlier
 )
 
@@ -145,6 +146,27 @@ def list_backups(
         return []
 
 
+def _get_file_token(instance_url: str, auth_token: str) -> str | None:
+    """Generate a short-lived file token for authenticated file downloads.
+
+    PocketBase requires a file token (passed as query parameter) for backup
+    downloads instead of the regular Authorization header.
+
+    Returns the file token string, or ``None`` on failure.
+    """
+    try:
+        resp = requests.post(
+            f"{instance_url}/api/files/token",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("token")
+    except Exception:
+        return None
+
+
 def download_backup(
     instance_url: str,
     backup_key: str,
@@ -154,16 +176,26 @@ def download_backup(
 ) -> bool:
     """Download a backup archive from *instance_url* to *dest_path*.
 
-    Sends ``GET {instance_url}/api/backups/{backup_key}``.
+    Uses a two-step process:
+    1. Generate a short-lived file token via ``POST /api/files/token``
+    2. Download the backup via ``GET /api/backups/{key}?token={file_token}``
+
     Returns ``True`` on success, ``False`` on failure.
     """
     try:
-        headers: dict[str, str] = {}
+        file_token: str | None = None
         if auth_token:
-            headers["Authorization"] = auth_token
+            file_token = _get_file_token(instance_url, auth_token)
+            if file_token is None:
+                return False
+
+        params: dict[str, str] = {}
+        if file_token:
+            params["token"] = file_token
+
         resp = requests.get(
             f"{instance_url}/api/backups/{backup_key}",
-            headers=headers,
+            params=params,
             timeout=60,
             stream=True,
         )
