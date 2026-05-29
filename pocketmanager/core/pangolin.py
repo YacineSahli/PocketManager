@@ -259,7 +259,7 @@ def list_resources(org_id: str) -> list[dict]:
         return []
 
 
-def set_resource_password(resource_id: int, password: str) -> bool:
+def set_resource_password(resource_id: int | str, password: str) -> bool:
     """Set a password for authentication on a Pangolin resource.
 
     Returns ``True`` on success, ``False`` on any failure.
@@ -275,6 +275,110 @@ def set_resource_password(resource_id: int, password: str) -> bool:
         resp = requests.post(
             f"{api_url}/resource/{resource_id}/password",
             json={"password": password},
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def get_resource(resource_id: int | str) -> dict | None:
+    """Get a single Pangolin resource by its *resource_id*.
+
+    Returns the resource dict, or ``None`` on failure.
+    """
+    config = load_config()
+    api_url = config.get("pangolin", {}).get("api_url", "")
+    headers = _get_api_headers(config)
+
+    if not api_url:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{api_url}/resource/{resource_id}",
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data", body)
+        if isinstance(data, list) and data:
+            data = data[0]
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def get_resource_auth_info(resource_id: int | str) -> dict | None:
+    """Get authentication info for a Pangolin resource.
+
+    Returns a dict with auth method booleans (``sso``, ``password``,
+    ``pincode``, ``headerAuth``, ``blockAccess``, ``whitelist``), or
+    ``None`` on failure.
+
+    First queries the resource for its GUID, then calls the auth-info
+    endpoint.  Falls back to the resource-level fields when the GUID is
+    unavailable.
+    """
+    resource = get_resource(resource_id)
+    if resource is None:
+        return None
+
+    resource_guid = resource.get("resourceGuid")
+
+    # Fallback: infer what we can from the resource object itself.
+    fallback: dict[str, Any] = {
+        "sso": resource.get("sso", False),
+        "blockAccess": resource.get("blockAccess", False),
+        "password": False,
+        "pincode": False,
+        "headerAuth": False,
+        "whitelist": resource.get("emailWhitelistEnabled", False),
+    }
+
+    if not resource_guid:
+        return fallback
+
+    config = load_config()
+    api_url = config.get("pangolin", {}).get("api_url", "")
+    headers = _get_api_headers(config)
+
+    if not api_url:
+        return fallback
+
+    try:
+        resp = requests.get(
+            f"{api_url}/resource/auth/{resource_guid}",
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data", body)
+        return data if isinstance(data, dict) else fallback
+    except Exception:
+        return fallback
+
+
+def remove_resource_password(resource_id: int | str) -> bool:
+    """Remove password authentication from a Pangolin resource.
+
+    Returns ``True`` on success, ``False`` on any failure.
+    """
+    config = load_config()
+    api_url = config.get("pangolin", {}).get("api_url", "")
+    headers = _get_api_headers(config)
+
+    if not api_url:
+        return False
+
+    try:
+        resp = requests.post(
+            f"{api_url}/resource/{resource_id}/password",
+            json={"password": None},
             headers=headers,
             timeout=15,
         )

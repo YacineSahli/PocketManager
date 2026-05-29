@@ -390,6 +390,18 @@ def get_instance_info(name: str) -> dict:
     except Exception:
         info["backup_count"] = 0
 
+    # Pangolin auth status
+    resource_id = instance.get("pangolin_resource_id")
+    if resource_id:
+        try:
+            from pocketmanager.core import pangolin as pangolin_mod
+
+            info["pangolin_auth"] = pangolin_mod.get_resource_auth_info(resource_id)
+        except Exception:
+            info["pangolin_auth"] = None
+    else:
+        info["pangolin_auth"] = None
+
     return info
 
 

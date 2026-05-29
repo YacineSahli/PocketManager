@@ -83,6 +83,30 @@ def _status_style(active: bool) -> str:
     return "[bold green]running[/bold green]" if active else "[bold red]stopped[/bold red]"
 
 
+def _format_auth_status(auth_info: dict | None) -> str:
+    """Format Pangolin auth info dict into a rich-markup status string."""
+    if auth_info is None:
+        return "[dim]unknown[/dim]"
+
+    auth_methods: list[str] = []
+    if auth_info.get("blockAccess"):
+        auth_methods.append("blocked")
+    if auth_info.get("sso"):
+        auth_methods.append("SSO")
+    if auth_info.get("password"):
+        auth_methods.append("password")
+    if auth_info.get("pincode"):
+        auth_methods.append("pincode")
+    if auth_info.get("whitelist"):
+        auth_methods.append("whitelist")
+    if auth_info.get("headerAuth"):
+        auth_methods.append("header")
+
+    if auth_methods:
+        return f"[bold yellow]enabled[/bold yellow] ({', '.join(auth_methods)})"
+    return "[bold green]disabled[/bold green] (public)"
+
+
 # ---------------------------------------------------------------------------
 # CLI Group
 # ---------------------------------------------------------------------------
@@ -408,6 +432,11 @@ def status(name: str) -> None:
         f"[bold]Uptime:[/bold]       {_format_uptime(info.get('uptime_seconds'))}\n"
         f"[bold]Backups:[/bold]      {info.get('backup_count', 0)}"
     )
+
+    # Pangolin auth status
+    resource_id = info.get("pangolin_resource_id")
+    if resource_id:
+        panel_content += f"\n[bold]Auth:[/bold]         {_format_auth_status(info.get('pangolin_auth'))}"
 
     if env_vars:
         env_lines = "\n".join(f"  [dim]{k}[/dim]={v}" for k, v in env_vars.items())
@@ -1218,3 +1247,79 @@ def credentials(name: str) -> None:
 
     update_instance(name, {"superadmin_email": email, "superadmin_password": password})
     console.print(f"[bold green]Credentials verified and saved for '{name}'.[/bold green]")
+
+
+# ---------------------------------------------------------------------------
+# auth
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--password", "password_val", default=None, help="Set password authentication.")
+@click.option("--no-password", is_flag=True, default=False, help="Remove password authentication.")
+def auth(name: str, password_val: str | None, no_password: bool) -> None:
+    """Manage Pangolin authentication for a PocketBase instance.
+
+    Without options, displays the current authentication status.
+
+    Use --password <value> to set a password, or --no-password to remove it.
+    """
+    from pocketmanager.core.state import get_instance
+
+    instance = get_instance(name)
+    if instance is None:
+        console.print(f"[bold red]Error: Instance '{name}' not found.[/bold red]")
+        sys.exit(1)
+
+    resource_id = instance.get("pangolin_resource_id")
+    if not resource_id:
+        console.print(
+            f"[bold yellow]Instance '{name}' has no Pangolin resource.[/bold yellow]\n"
+            "[dim]Authentication management requires a Pangolin resource. "
+            "Re-create the instance without --no-pangolin to enable this feature.[/dim]"
+        )
+        sys.exit(1)
+
+    from pocketmanager.core import pangolin as pangolin_mod
+
+    # No flags: show current auth status
+    if not password_val and not no_password:
+        auth_info = pangolin_mod.get_resource_auth_info(resource_id)
+        panel_lines = f"[bold]Resource ID:[/bold]  {resource_id}\n"
+        panel_lines += f"[bold]Auth:[/bold]         {_format_auth_status(auth_info)}"
+
+        if auth_info:
+            panel_lines += (
+                f"\n[bold]  SSO:[/bold]       {'on' if auth_info.get('sso') else '[dim]off[/dim]'}"
+                f"\n[bold]  Password:[/bold]  {'on' if auth_info.get('password') else '[dim]off[/dim]'}"
+            )
+            if auth_info.get("pincode"):
+                panel_lines += "\n[bold]  Pincode:[/bold]   on"
+            if auth_info.get("whitelist"):
+                panel_lines += "\n[bold]  Whitelist:[/bold]  on"
+            if auth_info.get("headerAuth"):
+                panel_lines += "\n[bold]  Header:[/bold]     on"
+
+        console.print(Panel(panel_lines, title=f"Authentication: {name}", border_style="cyan"))
+        return
+
+    # Apply changes
+    success = True
+
+    if password_val is not None:
+        if not pangolin_mod.set_resource_password(resource_id, password_val):
+            console.print("[bold red]Error: Failed to set password authentication.[/bold red]")
+            success = False
+        else:
+            console.print("[bold green]Password authentication set.[/bold green]")
+
+    if no_password:
+        if not pangolin_mod.remove_resource_password(resource_id):
+            console.print("[bold red]Error: Failed to remove password authentication.[/bold red]")
+            success = False
+        else:
+            console.print("[bold green]Password authentication removed.[/bold green]")
+
+    if not success:
+        sys.exit(1)

@@ -24,6 +24,7 @@ A CLI tool and web dashboard to manage multiple PocketBase instances on a single
 - Interactive and non-interactive instance creation with port, domain, subdomain, and environment variable support
 - Automatic systemd service management for each instance
 - [Pangolin](https://github.com/fosrl/pangolin) reverse proxy integration for automatic public URL creation
+- Pangolin resource authentication management (view status, set/remove password)
 - Backup and restore via the PocketBase backup API
 - Health checks for all running instances
 - Web dashboard for browser-based management
@@ -173,7 +174,10 @@ pm config set port_range.min 7000  # Change port range start
 | `pm remove <name>` | Remove an instance (with double confirmation) |
 | `pm remove <name> --keep-data` | Remove instance but keep data on disk |
 | `pm remove <name> --force` | Skip confirmation prompts |
-| `pm status <name>` | Show detailed instance information |
+| `pm status <name>` | Show detailed instance information (includes Pangolin auth status) |
+| `pm auth <name>` | Show Pangolin authentication status for an instance |
+| `pm auth <name> --password <pw>` | Set password authentication on the Pangolin resource |
+| `pm auth <name> --no-password` | Remove password authentication from the Pangolin resource |
 | `pm info` | Show system and PocketManager information |
 
 ### Logs and Health
@@ -390,6 +394,20 @@ pm config set pangolin.subdomain_suffix apps   # optional, see above
 - When creating with a subdomain (`-s myapp`), PocketManager uses the configured `default_domain` and `subdomain_suffix` to build the full URL (e.g. `https://myapp.apps.yacinesahli.com`).
 - When removing an instance, the corresponding Pangolin resource is also deleted.
 
+> **Note:** Pangolin enables SSO authentication by default on new resources. This means visitors must authenticate via Pangolin before reaching your PocketBase instance. For PocketBase instances that need to be publicly accessible (e.g. serving a public API), use `pm auth <name> --no-password` to remove password auth or manage auth via the Pangolin dashboard.
+
+### Resource Authentication
+
+When a Pangolin resource is created, SSO authentication is enabled by default. Use the `pm auth` command to view and manage authentication:
+
+```bash
+pm auth myapp                          # View current auth status
+pm auth myapp --password s3cret        # Set password authentication
+pm auth myapp --no-password            # Remove password authentication
+```
+
+The `pm status <name>` command also shows the current authentication status in its output panel.
+
 To skip Pangolin integration for a single instance, use the `--no-pangolin` flag:
 
 ```bash
@@ -532,7 +550,7 @@ pocketmanager/
 - **core/state.py** -- Persists instance metadata (name, port, version, status) in `instances.json`.
 - **core/instance.py** -- Orchestrates the full instance lifecycle (create, start, stop, remove, update, migrate).
 - **core/systemd.py** -- Generates, installs, enables, and manages systemd service units.
-- **core/pangolin.py** -- HTTP client for the Pangolin API (create/delete proxy resources).
+- **core/pangolin.py** -- HTTP client for the Pangolin API (create/delete proxy resources, manage authentication).
 - **core/backup.py** -- Wraps the PocketBase backup REST endpoints.
 - **core/health.py** -- Sends HTTP health probes to all instances and reports results.
 - **core/selfupdate.py** -- Checks GitHub Releases and applies updates via git.
