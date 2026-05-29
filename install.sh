@@ -92,14 +92,18 @@ check_requirements() {
         exit 1
     fi
 
-    # python3-venv (required for virtual environment creation)
-    if ! python3 -m venv --help &>/dev/null; then
+    # python3-venv / ensurepip (required for virtual environment creation)
+    if ! python3 -c "import ensurepip" &>/dev/null; then
         warn "python3-venv not found, attempting to install..."
-        if sudo apt-get update -qq && sudo apt-get install -y -qq "python3-venv"; then
+        local py_version
+        py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
+            info "python${py_version}-venv installed successfully."
+        elif sudo apt-get install -y -qq "python3-venv"; then
             info "python3-venv installed successfully."
         else
             error "Failed to install python3-venv."
-            echo -e "  Install it manually: ${BOLD}sudo apt-get install -y python3-venv${NC}"
+            echo -e "  Install it manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
             exit 1
         fi
     else
@@ -140,7 +144,21 @@ create_venv() {
         rm -rf "$VENV_DIR"
     fi
 
-    python3 -m venv "$VENV_DIR"
+    if ! python3 -m venv "$VENV_DIR"; then
+        error "Failed to create virtual environment."
+        warn "Attempting to install python3-venv and retry..."
+        local py_version
+        py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
+            rm -rf "$VENV_DIR"
+            python3 -m venv "$VENV_DIR"
+        else
+            error "Could not install python3-venv. Please run:"
+            echo -e "  ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
+            echo -e "  Then re-run this installer."
+            exit 1
+        fi
+    fi
     info "Virtual environment created at ${VENV_DIR}"
 }
 
