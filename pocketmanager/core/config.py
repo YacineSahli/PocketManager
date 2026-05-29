@@ -1,11 +1,10 @@
 """Global configuration management for PocketManager.
 
-Config is stored in ``config.json`` next to the pocketmanager package.
+Config is stored in ``~/.config/pocketmanager/`` (or ``POCKETMANAGER_HOME``).
 Resolution order for the config directory:
 
 1. ``POCKETMANAGER_HOME`` environment variable
-2. Parent of the pocketmanager package directory (walk up from ``__file__``)
-3. ``Path.cwd()``
+2. ``~/.config/pocketmanager/``
 """
 
 from __future__ import annotations
@@ -83,21 +82,13 @@ def get_config_dir() -> Path:
     Resolution order:
 
     1. ``POCKETMANAGER_HOME`` environment variable
-    2. Parent of the ``pocketmanager`` package directory
-    3. Current working directory
+    2. ``~/.config/pocketmanager/``
     """
     env_home = os.environ.get("POCKETMANAGER_HOME")
     if env_home:
         return Path(env_home).resolve()
 
-    # Walk up from this file's directory to find the pocketmanager package dir,
-    # then use its *parent*.
-    this_dir = Path(__file__).resolve().parent  # pocketmanager/core
-    pkg_dir = this_dir.parent  # pocketmanager
-    if pkg_dir.name == "pocketmanager":
-        return pkg_dir.parent  # project root
-
-    return Path.cwd()
+    return Path.home() / ".config" / "pocketmanager"
 
 
 def get_config_path() -> Path:
