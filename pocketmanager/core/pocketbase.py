@@ -184,7 +184,7 @@ def download_and_cache(version: str) -> Path:
         # Extract the zip
         try:
             with zipfile.ZipFile(tmp_zip, "r") as zf:
-                zf.extractall(dest_dir, filter="data")
+                zf.extractall(dest_dir)
         except zipfile.BadZipFile as exc:
             raise RuntimeError(f"Downloaded file is not a valid zip: {exc}") from exc
         finally:
