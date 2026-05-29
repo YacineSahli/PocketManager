@@ -261,9 +261,9 @@ migrate_existing() {
 
     echo ""
     echo -e "Found existing PocketBase instances:"
-    echo "$existing" | while read -r dir; do
+    while read -r dir; do
         echo -e "  ${YELLOW}$(basename "$dir")${NC}"
-    done
+    done <<< "$existing"
     echo ""
 
     if ! [[ -t 0 ]]; then
