@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pocketmanager"
+version = "0.1.0"
+description = "CLI tool and dashboard to manage multiple PocketBase instances on a single Linux VPS"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Yacine Sahli"},
+]
+keywords = ["pocketbase", "systemd", "vps", "management", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "click>=8.1",
+    "requests>=2.31",
+    "rich>=13.0",
+    "flask>=3.0",
+]
+
+[project.scripts]
+pm = "pocketmanager.cli:cli"
+pocketmanager = "pocketmanager.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/yacinesahli/PocketManager"
+Repository = "https://github.com/yacinesahli/PocketManager"
+Issues = "https://github.com/yacinesahli/PocketManager/issues"
+
+[tool.setuptools.packages.find]
+include = ["pocketmanager*"]
