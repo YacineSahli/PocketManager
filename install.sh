@@ -92,6 +92,20 @@ check_requirements() {
         exit 1
     fi
 
+    # python3-venv (required for virtual environment creation)
+    if ! python3 -m venv --help &>/dev/null; then
+        warn "python3-venv not found, attempting to install..."
+        if sudo apt-get update -qq && sudo apt-get install -y -qq "python3-venv"; then
+            info "python3-venv installed successfully."
+        else
+            error "Failed to install python3-venv."
+            echo -e "  Install it manually: ${BOLD}sudo apt-get install -y python3-venv${NC}"
+            exit 1
+        fi
+    else
+        info "python3-venv found"
+    fi
+
     # Check if running as root
     if [[ "$(id -u)" -eq 0 ]]; then
         warn "Running as root is not recommended."
