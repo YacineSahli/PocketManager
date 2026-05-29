@@ -606,8 +606,10 @@ def migrate_existing() -> list[dict]:
         if name.lower() in existing_names:
             continue
 
-        # Check if systemd service exists
+        # Check if systemd service exists (standard or vendor location)
         service_path = Path(f"/etc/systemd/system/pocketbase-{name}.service")
+        if not service_path.is_file():
+            service_path = Path(f"/usr/lib/systemd/system/pocketbase-{name}.service")
         if not service_path.is_file():
             continue
 
