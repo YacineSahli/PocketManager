@@ -560,11 +560,20 @@ def update_instance(name: str, version: str | None = None) -> dict:
     # 4. Backup old binary
     if binary_path.is_file():
         backup_path = instance_dir / "pocketbase.bak"
-        shutil.copy2(str(binary_path), str(backup_path))
+        subprocess.run(
+            ["sudo", "cp", "-p", str(binary_path), str(backup_path)],
+            check=True,
+        )
 
     # 5. Replace binary
-    shutil.copy2(str(cached_binary), str(binary_path))
-    binary_path.chmod(0o755)
+    subprocess.run(
+        ["sudo", "cp", "-p", str(cached_binary), str(binary_path)],
+        check=True,
+    )
+    subprocess.run(
+        ["sudo", "chmod", "755", str(binary_path)],
+        check=True,
+    )
 
     # 6. Set permissions and capabilities
     set_permissions(str(instance_dir))
