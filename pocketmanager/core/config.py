@@ -32,7 +32,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "api_key": "",
         "org_id": "",
         "default_domain_id": "",
+        "default_domain": "",
         "site_id": "",
+        "target_ip": "172.19.0.1",
     },
     "defaults": {
         "auto_backups_enabled": True,
@@ -135,6 +137,8 @@ def save_config(config: dict[str, Any]) -> None:
             fh.write("\n")
         # os.replace is atomic on the same filesystem
         os.replace(tmp_path, path)
+        # Restrict to owner-only to protect secrets (api_key, dashboard_password)
+        os.chmod(path, 0o600)
     except BaseException:
         # Clean up the temp file if anything went wrong
         try:

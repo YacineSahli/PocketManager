@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -185,7 +187,6 @@ def create(
 
 
 @cli.command("list")
-@click.command("ls")
 def list_instances_cmd() -> None:
     """List all PocketBase instances."""
     from pocketmanager.core import instance as instance_mod
@@ -515,12 +516,52 @@ def backup(name: str, download: bool, backup_name: str | None) -> None:
     instance_url = f"http://localhost:{port}"
     console.print(f"[bold]Creating backup for '{name}'...[/bold]")
 
-    success = backup_mod.create_backup(instance_url, name=backup_name)
+    token = _require_backup_auth(name, instance)
+    if token is None:
+        sys.exit(1)
+
+    success = backup_mod.create_backup(instance_url, name=backup_name, auth_token=token)
     if not success:
         console.print(f"[bold red]Error: Failed to create backup for '{name}'.[/bold red]")
         sys.exit(1)
 
     console.print(f"[bold green]Backup created successfully for '{name}'.[/bold green]")
+
+    if download:
+        # Find the backup we just created
+        all_backups = backup_mod.list_backups(instance_url, auth_token=token)
+        if not all_backups:
+            console.print("[bold yellow]Warning: Could not list backups for download.[/bold yellow]")
+            return
+
+        # Pick the latest backup, or match by name if given
+        target = None
+        if backup_name:
+            for b in all_backups:
+                if b.get("key", "").startswith(backup_name):
+                    target = b
+                    break
+        if not target:
+            # Sort by modified descending and take the most recent
+            all_backups.sort(key=lambda b: b.get("modified", ""), reverse=True)
+            target = all_backups[0]
+
+        backup_key = target.get("key", "")
+        if not backup_key:
+            console.print("[bold yellow]Warning: Could not identify backup key for download.[/bold yellow]")
+            return
+
+        # Download to the instance directory
+        instance_dir = instance.get("instance_dir", "")
+        dest_path = f"{instance_dir}/{backup_key}" if instance_dir else backup_key
+
+        console.print(f"[bold]Downloading backup to {dest_path}...[/bold]")
+        dl_ok = backup_mod.download_backup(instance_url, backup_key, dest_path, auth_token=token)
+        if dl_ok:
+            console.print(f"[bold green]Backup downloaded to: {dest_path}[/bold green]")
+        else:
+            console.print(f"[bold red]Error: Failed to download backup.[/bold red]")
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +587,10 @@ def backups(name: str) -> None:
         sys.exit(1)
 
     instance_url = f"http://localhost:{port}"
-    backup_list = backup_mod.list_backups(instance_url)
+    token = _require_backup_auth(name, instance)
+    if token is None:
+        sys.exit(1)
+    backup_list = backup_mod.list_backups(instance_url, auth_token=token)
 
     if not backup_list:
         console.print(f"[dim]No backups found for '{name}'.[/dim]")
@@ -603,8 +647,12 @@ def restore(name: str, backup_key: str) -> None:
     instance_url = f"http://localhost:{port}"
     console.print(f"[bold yellow]Warning:[/bold yellow] Instance '{name}' will restart after restore.")
 
+    token = _require_backup_auth(name, instance)
+    if token is None:
+        sys.exit(1)
+
     console.print(f"[bold]Restoring '{name}' from backup '{backup_key}'...[/bold]")
-    success = backup_mod.restore_backup(instance_url, backup_key)
+    success = backup_mod.restore_backup(instance_url, backup_key, auth_token=token)
     if not success:
         console.print(f"[bold red]Error: Failed to restore backup '{backup_key}' for '{name}'.[/bold red]")
         sys.exit(1)
@@ -732,8 +780,9 @@ def self_update() -> None:
 
 
 @cli.command()
+@click.option("--reveal", is_flag=True, default=False, help="Show sensitive values.")
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def config(args: tuple[str, ...]) -> None:
+def config(args: tuple[str, ...], reveal: bool) -> None:
     """View or set configuration values.
 
     With no arguments: print current configuration as JSON.
@@ -743,7 +792,20 @@ def config(args: tuple[str, ...]) -> None:
 
     if not args:
         # Print current config
+        import copy
+
         current_config = config_mod.load_config()
+
+        if not reveal:
+            current_config = copy.deepcopy(current_config)
+            # Mask dashboard_password
+            if current_config.get("dashboard_password"):
+                current_config["dashboard_password"] = "***"
+            # Mask pangolin.api_key
+            pangolin = current_config.get("pangolin", {})
+            if pangolin.get("api_key"):
+                pangolin["api_key"] = "***"
+
         import json as _json
 
         pretty = _json.dumps(current_config, indent=2, ensure_ascii=False)
@@ -776,8 +838,8 @@ def config(args: tuple[str, ...]) -> None:
         config_mod.set(key, value)
         console.print(f"[bold green]Config updated: {key} = {value}[/bold green]")
     else:
-        # Treat as a get request
-        key = " ".join(args)
+        # Treat as a get request — handle optional "get" keyword
+        key = args[0] if args[0] != "get" else args[1] if len(args) > 1 else args[0]
         val = config_mod.get(key)
         if val is None:
             console.print(f"[bold red]Error: Config key '{key}' not found.[/bold red]")
@@ -817,15 +879,55 @@ def migrate_existing() -> None:
 @cli.command()
 @click.option("--port", "dash_port", type=int, default=None, help="Dashboard HTTP port.")
 @click.option("--daemon", is_flag=True, default=False, help="Run in background.")
-def dashboard(dash_port: int | None, daemon: bool) -> None:
+@click.option("--stop", is_flag=True, default=False, help="Stop a running daemon.")
+def dashboard(dash_port: int | None, daemon: bool, stop: bool) -> None:
     """Launch the PocketManager web dashboard."""
-    from pocketmanager.core.config import get as cfg_get
+    from pocketmanager.core.config import get as cfg_get, get_config_dir, load_config, save_config
+
+    pid_path = get_config_dir() / "dashboard.pid"
+
+    # --stop: kill the daemon
+    if stop:
+        if not pid_path.is_file():
+            console.print("[bold red]Error: No dashboard PID file found. Is the dashboard running?[/bold red]")
+            sys.exit(1)
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            console.print(f"[bold green]Dashboard stopped (PID {pid}).[/bold green]")
+        except ProcessLookupError:
+            console.print("[bold yellow]Dashboard process not found — stale PID file removed.[/bold yellow]")
+        except Exception as exc:
+            console.print(f"[bold red]Error stopping dashboard: {exc}[/bold red]")
+            sys.exit(1)
+        finally:
+            try:
+                pid_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return
 
     if dash_port is None:
         dash_port = cfg_get("dashboard_port", 8888)
 
+    # Ensure a dashboard password is set — dashboard must not run unauthenticated
+    config = load_config()
+    if not config.get("dashboard_password"):
+        if daemon:
+            console.print("[bold red]Error: Dashboard password is required for network-accessible dashboard.[/bold red]")
+            console.print("[dim]Run: pm config set dashboard_password <password>[/dim]")
+            sys.exit(1)
+        console.print("[bold yellow]No dashboard password set. You must set one before starting the dashboard.[/bold yellow]")
+        new_password = click.prompt("Set dashboard password", hide_input=True, confirmation_prompt=True)
+        if not new_password:
+            console.print("[bold red]Password cannot be empty.[/bold red]")
+            sys.exit(1)
+        config["dashboard_password"] = new_password
+        save_config(config)
+        console.print("[bold green]Dashboard password saved.[/bold green]")
+
     try:
-        from pocketmanager.core.dashboard import create_app
+        from pocketmanager.dashboard.app import create_app
     except ImportError as exc:
         console.print(f"[bold red]Error: Dashboard module not available: {exc}[/bold red]")
         console.print("[dim]Install with: pip install flask[/dim]")
@@ -838,24 +940,21 @@ def dashboard(dash_port: int | None, daemon: bool) -> None:
         # Fork to background
         pid = os.fork()
         if pid > 0:
+            # Parent: write PID file and exit
+            pid_path.parent.mkdir(parents=True, exist_ok=True)
+            pid_path.write_text(str(pid))
             console.print(f"[bold green]Dashboard running in background (PID: {pid}).[/bold green]")
             console.print(f"[bold]Access it at: {url}[/bold]")
+            console.print(f"[dim]Stop with: pm dashboard --stop[/dim]")
             return
 
-        # Child process
+        # Child process — run the dashboard
         try:
-            import daemon as _daemon  # type: ignore[import-untyped]
-            with _daemon.DaemonContext():
-                app = create_app()
-                app.run(host="0.0.0.0", port=dash_port)
-        except ImportError:
-            # Fallback: double-fork approach
-            try:
-                app = create_app()
-                app.run(host="0.0.0.0", port=dash_port, quiet=True)
-            except Exception as exc:
-                console.print(f"[bold red]Error starting dashboard: {exc}[/bold red]")
-                sys.exit(1)
+            app = create_app()
+            app.run(host="0.0.0.0", port=dash_port)
+        except Exception as exc:
+            console.print(f"[bold red]Error starting dashboard: {exc}[/bold red]")
+            sys.exit(1)
     else:
         app = create_app()
         console.print(f"[bold green]Dashboard is available at: {url}[/bold green]")
@@ -903,3 +1002,89 @@ def info() -> None:
     )
 
     console.print(Panel(panel_content, title="System Information", border_style="blue"))
+
+
+# ---------------------------------------------------------------------------
+# credentials
+# ---------------------------------------------------------------------------
+
+
+def _require_backup_auth(name: str, instance: dict) -> str | None:
+    """Resolve a PocketBase auth token for *instance* or print guidance.
+
+    Returns the token on success, or ``None`` (after printing an error)
+    if credentials are missing or authentication fails.
+    """
+    email = instance.get("superadmin_email")
+    password = instance.get("superadmin_password")
+    if not email or not password:
+        console.print(
+            "[bold yellow]No PocketBase superadmin credentials configured "
+            f"for '{name}'.[/bold yellow]\n"
+            f"[dim]Set them with: pm credentials {name}[/dim]"
+        )
+        return None
+
+    from pocketmanager.core.backup import authenticate
+
+    port = instance.get("port")
+    if not port:
+        return None
+    url = f"http://localhost:{port}"
+    token = authenticate(url, email, password)
+    if not token:
+        console.print(
+            "[bold red]PocketBase authentication failed. "
+            "Check the stored superadmin credentials.[/bold red]\n"
+            f"[dim]Update with: pm credentials {name}[/dim]"
+        )
+        return None
+    return token
+
+
+@cli.command()
+@click.argument("name")
+def credentials(name: str) -> None:
+    """Set or update PocketBase superadmin credentials for an instance.
+
+    Credentials are required for backup operations (create, list, download,
+    restore).  They are stored in the instance state file (owner-only readable).
+    """
+    from pocketmanager.core.state import get_instance, update_instance
+    from pocketmanager.core.backup import authenticate
+
+    instance = get_instance(name)
+    if instance is None:
+        console.print(f"[bold red]Error: Instance '{name}' not found.[/bold red]")
+        sys.exit(1)
+
+    port = instance.get("port")
+    if not port:
+        console.print(f"[bold red]Error: No port configured for instance '{name}'.[/bold red]")
+        sys.exit(1)
+
+    # Show current state
+    current_email = instance.get("superadmin_email")
+    if current_email:
+        console.print(f"[dim]Current superadmin email: {current_email}[/dim]\n")
+
+    email = click.prompt("Superadmin email")
+    password = click.prompt("Superadmin password", hide_input=True)
+    if not email or not password:
+        console.print("[bold red]Error: Email and password cannot be empty.[/bold red]")
+        sys.exit(1)
+
+    # Verify credentials against the instance
+    console.print("[dim]Verifying credentials...[/dim]")
+    url = f"http://localhost:{port}"
+    token = authenticate(url, email, password)
+    if not token:
+        console.print(
+            "[bold red]Authentication failed. Check the email and password.[/bold red]\n"
+            "[dim]Make sure the PocketBase superadmin account has been created "
+            f"via the admin UI at http://localhost:{port}/_/[/dim]"
+        )
+        sys.exit(1)
+
+    update_instance(name, {"superadmin_email": email, "superadmin_password": password})
+    console.print(f"[bold green]Credentials verified and saved for '{name}'.[/bold green]")

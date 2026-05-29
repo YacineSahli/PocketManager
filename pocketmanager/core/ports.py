@@ -8,6 +8,7 @@ range.
 from __future__ import annotations
 
 import re
+import socket
 import subprocess
 from typing import Any
 
@@ -78,6 +79,20 @@ def get_allocated_ports() -> set[int]:
 # ---------------------------------------------------------------------------
 
 
+def _try_bind(port: int) -> bool:
+    """Attempt to bind to *port* to verify it is truly free.
+
+    Returns ``True`` if the bind succeeds, ``False`` otherwise.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", port))
+            return True
+    except OSError:
+        return False
+
+
 def is_port_free(port: int) -> bool:
     """Check whether *port* is free on both the system **and** in state."""
     return port not in get_used_ports() and port not in get_allocated_ports()
@@ -107,7 +122,7 @@ def find_available_port(
     occupied = used | allocated
 
     for port in range(start, end + 1):
-        if port not in occupied:
+        if port not in occupied and _try_bind(port):
             return port
 
     raise RuntimeError(

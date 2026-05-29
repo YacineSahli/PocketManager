@@ -8,7 +8,6 @@ def create_app() -> Flask:
     app = Flask(
         __name__,
         template_folder=str(Path(__file__).parent / "templates"),
-        static_folder=str(Path(__file__).parent / "static"),
     )
 
     from pocketmanager.dashboard.api import api

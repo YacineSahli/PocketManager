@@ -889,6 +889,7 @@ let allInstances = [];
 let expandedCards = new Set();
 let pendingRemoveName = null;
 let refreshInterval = null;
+let appConfig = {};
 
 // ── API Helpers ────────────────────────────────────────────────────
 async function api(path, options = {}) {
@@ -1088,7 +1089,11 @@ function toggleCard(name) {
 // ── Build URL ──────────────────────────────────────────────────────
 function buildUrl(inst) {
   if (inst.domain) return 'https://' + inst.domain;
-  if (inst.subdomain) return 'https://' + inst.subdomain + '.app';
+  if (inst.subdomain) {
+    const baseDomain = (appConfig.pangolin && appConfig.pangolin.default_domain) || '';
+    if (baseDomain) return 'https://' + inst.subdomain + '.' + baseDomain;
+    return 'https://' + inst.subdomain + '.app';
+  }
   if (inst.port) return 'http://localhost:' + inst.port;
   return null;
 }
@@ -1462,6 +1467,7 @@ function startAutoRefresh() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────
+api('/config').then(r => r.json()).then(cfg => { appConfig = cfg || {}; }).catch(() => {});
 fetchInstances().then(startAutoRefresh);
 </script>
 </body>

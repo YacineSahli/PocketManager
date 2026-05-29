@@ -7,6 +7,33 @@ from pocketmanager.dashboard.auth import requires_auth
 api = Blueprint("api", __name__)
 
 
+def _strip_instance_secrets(instance: dict) -> dict:
+    """Remove sensitive fields from an instance dict before sending to the client."""
+    safe = dict(instance)
+    safe.pop("superadmin_email", None)
+    safe.pop("superadmin_password", None)
+    return safe
+
+
+@api.before_request
+def _check_csrf():
+    """Block CSRF attacks on state-changing endpoints.
+
+    Requires ``Content-Type: application/json`` which HTML forms cannot set
+    (they use ``application/x-www-form-urlencoded`` or ``multipart/form-data``).
+    Combined with the browser's same-origin policy and lack of CORS headers on
+    this API, this is sufficient to block all browser-based CSRF attacks.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+
+    ct = request.content_type or ""
+    if "application/json" not in ct:
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+
+    return None
+
+
 # GET /api/instances - List all instances with status
 @api.route("/instances", methods=["GET"])
 @requires_auth
@@ -14,7 +41,7 @@ def list_instances():
     from pocketmanager.core.instance import list_instances as li
 
     instances = li()
-    return jsonify({"instances": instances})
+    return jsonify({"instances": [_strip_instance_secrets(i) for i in instances]})
 
 
 # GET /api/instances/<name> - Get detailed info
@@ -25,7 +52,7 @@ def get_instance(name):
 
     try:
         info = get_instance_info(name)
-        return jsonify(info)
+        return jsonify(_strip_instance_secrets(info))
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 
@@ -47,7 +74,7 @@ def create_instance():
             version=data.get("version"),
             pangolin=data.get("pangolin", True),
         )
-        return jsonify(instance), 201
+        return jsonify(_strip_instance_secrets(instance)), 201
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 400
 
@@ -65,7 +92,7 @@ def remove_instance(name):
             keep_data=data.get("keep_data", False),
             remove_pangolin=data.get("remove_pangolin", True),
         )
-        return jsonify(removed)
+        return jsonify(_strip_instance_secrets(removed))
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 
@@ -124,30 +151,40 @@ def get_logs(name):
 @api.route("/instances/<name>/backups", methods=["GET"])
 @requires_auth
 def list_backups(name):
+    from pocketmanager.core.backup import (
+        get_instance_auth_token,
+        list_backups as pb_list_backups,
+    )
     from pocketmanager.core.state import get_instance
-    from pocketmanager.core.backup import list_backups as pb_list_backups
 
     inst = get_instance(name)
     if not inst:
         return jsonify({"error": "Instance not found"}), 404
     url = f"http://localhost:{inst['port']}"
-    backups = pb_list_backups(url)
-    return jsonify({"backups": backups or []})
+    token = get_instance_auth_token(name)
+    backups = pb_list_backups(url, auth_token=token)
+    return jsonify({"backups": backups or [], "auth": token is not None})
 
 
 # POST /api/instances/<name>/backup
 @api.route("/instances/<name>/backup", methods=["POST"])
 @requires_auth
 def create_backup(name):
+    from pocketmanager.core.backup import (
+        create_backup as pb_create_backup,
+        get_instance_auth_token,
+    )
     from pocketmanager.core.state import get_instance
-    from pocketmanager.core.backup import create_backup as pb_create_backup
 
     inst = get_instance(name)
     if not inst:
         return jsonify({"error": "Instance not found"}), 404
     url = f"http://localhost:{inst['port']}"
+    token = get_instance_auth_token(name)
+    if not token:
+        return jsonify({"error": "No PocketBase superadmin credentials configured"}), 403
     data = request.get_json() or {}
-    success = pb_create_backup(url, name=data.get("name"))
+    success = pb_create_backup(url, name=data.get("name"), auth_token=token)
     return jsonify({"success": success})
 
 
@@ -169,9 +206,36 @@ def get_config():
 
     config = load_config()
     # Don't expose sensitive fields
-    safe = {k: v for k, v in config.items() if k != "pangolin"}
+    safe = {k: v for k, v in config.items() if k not in ("pangolin", "dashboard_password")}
+    safe["dashboard_password"] = "***" if config.get("dashboard_password") else ""
     safe["pangolin"] = {
         k: ("***" if k in ("api_key",) and v else v)
         for k, v in config.get("pangolin", {}).items()
     }
     return jsonify(safe)
+
+
+# POST /api/instances/<name>/credentials - Set PocketBase superadmin credentials
+@api.route("/instances/<name>/credentials", methods=["POST"])
+@requires_auth
+def set_credentials(name):
+    from pocketmanager.core.backup import authenticate
+    from pocketmanager.core.state import get_instance, update_instance
+
+    inst = get_instance(name)
+    if not inst:
+        return jsonify({"error": "Instance not found"}), 404
+
+    data = request.get_json() or {}
+    email = data.get("email", "").strip()
+    password = data.get("password", "")
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    url = f"http://localhost:{inst['port']}"
+    token = authenticate(url, email, password)
+    if not token:
+        return jsonify({"error": "Authentication failed — check email and password"}), 401
+
+    update_instance(name, {"superadmin_email": email, "superadmin_password": password})
+    return jsonify({"success": True})
