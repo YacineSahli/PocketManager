@@ -166,8 +166,7 @@ pm config set port_range.min 7000  # Change port range start
 |---------|-------------|
 | `pm create <name>` | Create a new instance (interactive mode) |
 | `pm create <name> -p 8110 -d example.com -s pb -e KEY=VAL` | Create with explicit options |
-| `pm list` | List all instances with status |
-| `pm ls` | Alias for `pm list` |
+| `pm ls` | List all instances with status |
 | `pm start <name>` | Start a stopped instance |
 | `pm stop <name>` | Stop a running instance |
 | `pm restart <name>` | Restart an instance |
