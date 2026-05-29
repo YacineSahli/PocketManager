@@ -138,6 +138,24 @@ clone_or_update_repo() {
         git clone "$REPO_URL" "$INSTALL_DIR"
     fi
 
+    # Re-exec from the cloned repo so we always run the latest version.
+    # _PM_REEXECED prevents infinite loops.
+    local running_script
+    running_script="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null)"
+    local cloned_script
+    cloned_script="$(readlink -f "${INSTALL_DIR}/install.sh" 2>/dev/null || realpath "${INSTALL_DIR}/install.sh" 2>/dev/null)"
+
+    if [[ -n "${_PM_REEXECED:-}" ]]; then
+        info "Repository ready."
+        return
+    fi
+
+    if [[ "$running_script" != "$cloned_script" ]]; then
+        info "Re-launching from cloned repository..."
+        export _PM_REEXECED=1
+        exec bash "$cloned_script" "$@"
+    fi
+
     info "Repository ready."
 }
 
