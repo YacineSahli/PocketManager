@@ -9,9 +9,11 @@ free with respect to the caller's data (we deep-copy before mutating).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,25 @@ _EMPTY_STATE: dict[str, Any] = {
     "version": 1,
     "instances": [],
 }
+
+
+# ---------------------------------------------------------------------------
+# File locking
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _state_lock():
+    """Exclusive file lock to prevent concurrent state file writes."""
+    lock_path = get_config_dir() / "instances.json.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -71,6 +92,8 @@ def save_state(state: dict[str, Any]) -> None:
             json.dump(state, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         os.replace(tmp_path, path)
+        # Restrict to owner-only to protect instance data
+        os.chmod(path, 0o600)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -108,18 +131,19 @@ def add_instance(instance: dict[str, Any]) -> None:
     """
     import copy
 
-    state = load_state()
+    with _state_lock():
+        state = load_state()
 
-    inst = copy.deepcopy(instance)
-    name: str = inst.get("name", "unnamed")
-    inst.setdefault("slug", f"pocketbase-{name}")
-    inst.setdefault(
-        "created_at",
-        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    )
+        inst = copy.deepcopy(instance)
+        name: str = inst.get("name", "unnamed")
+        inst.setdefault("slug", f"pocketbase-{name}")
+        inst.setdefault(
+            "created_at",
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
 
-    state.setdefault("instances", []).append(inst)
-    save_state(state)
+        state.setdefault("instances", []).append(inst)
+        save_state(state)
 
 
 def remove_instance(name: str) -> dict[str, Any] | None:
@@ -127,15 +151,16 @@ def remove_instance(name: str) -> dict[str, Any] | None:
 
     Returns the removed instance dict, or ``None`` if not found.
     """
-    state = load_state()
-    instances: list[dict[str, Any]] = state.get("instances", [])
-    name_lower = name.lower()
+    with _state_lock():
+        state = load_state()
+        instances: list[dict[str, Any]] = state.get("instances", [])
+        name_lower = name.lower()
 
-    for idx, inst in enumerate(instances):
-        if inst.get("name", "").lower() == name_lower:
-            removed = instances.pop(idx)
-            save_state(state)
-            return removed
+        for idx, inst in enumerate(instances):
+            if inst.get("name", "").lower() == name_lower:
+                removed = instances.pop(idx)
+                save_state(state)
+                return removed
 
     return None
 
@@ -148,14 +173,15 @@ def update_instance(
 
     Returns the updated instance dict, or ``None`` if not found.
     """
-    state = load_state()
-    instances: list[dict[str, Any]] = state.get("instances", [])
-    name_lower = name.lower()
+    with _state_lock():
+        state = load_state()
+        instances: list[dict[str, Any]] = state.get("instances", [])
+        name_lower = name.lower()
 
-    for inst in instances:
-        if inst.get("name", "").lower() == name_lower:
-            inst.update(updates)
-            save_state(state)
-            return inst
+        for inst in instances:
+            if inst.get("name", "").lower() == name_lower:
+                inst.update(updates)
+                save_state(state)
+                return inst
 
     return None

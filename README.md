@@ -129,7 +129,7 @@ PocketManager stores its configuration in `~/pocketmanager/config.json`. The ful
 | `base_dir` | Root directory where instance data folders are created |
 | `cache_dir` | Directory for caching downloaded PocketBase binaries |
 | `dashboard_port` | Port for the web dashboard (default: 8888) |
-| `dashboard_password` | Password to protect the web dashboard (leave empty for no auth) |
+| `dashboard_password` | Password to protect the web dashboard (required — you will be prompted on first launch) |
 | `port_range` | Min/max port range for automatic port allocation |
 | `pangolin.api_key` | API key for your Pangolin instance |
 | `pangolin.org_id` | Organization ID in Pangolin |
@@ -142,7 +142,8 @@ PocketManager stores its configuration in `~/pocketmanager/config.json`. The ful
 View and edit configuration from the CLI:
 
 ```bash
-pm config                          # View current configuration
+pm config                          # View current configuration (secrets masked)
+pm config --reveal                 # View configuration with secrets visible
 pm config set pangolin.api_key KEY # Set a Pangolin API key
 pm config set pangolin.org_id ID   # Set organization ID
 pm config set dashboard_password YOUR_PASSWORD  # Set dashboard password
@@ -181,10 +182,27 @@ pm config set port_range.min 7000  # Change port range start
 
 ### Backups
 
+> **Prerequisite:** PocketBase backup endpoints require superuser authentication.
+> Before using backup commands, configure the PocketBase superadmin credentials:
+>
+> ```bash
+> pm credentials <name>
+> ```
+>
+> You will be prompted for the superadmin email and password (the same ones you
+> set up via the PocketBase Admin UI at `http://localhost:<port>/_/`). Credentials
+> are verified against the live instance and stored in the instance state file
+> (owner-only readable, `0600` permissions).
+>
+> **Tip:** Create a dedicated backup superadmin in the PocketBase Admin UI (e.g.
+> `pm-backup@instance`) and use that for `pm credentials`. This keeps your personal
+> superadmin account separate from automated backup operations.
+
 | Command | Description |
 |---------|-------------|
+| `pm credentials <name>` | Set or update PocketBase superadmin credentials |
 | `pm backup <name>` | Create a backup of an instance |
-| `pm backup <name> --download` | Create a backup and download it |
+| `pm backup <name> --download` | Create a backup and download it locally |
 | `pm backup <name> --name mybackup` | Create a backup with a custom name |
 | `pm backups <name>` | List all backups for an instance |
 | `pm restore <name> <key>` | Restore an instance from a specific backup |
@@ -205,6 +223,7 @@ pm config set port_range.min 7000  # Change port range start
 | `pm dashboard` | Start the web dashboard (default port 8888) |
 | `pm dashboard --port 9999` | Start the dashboard on a custom port |
 | `pm dashboard --daemon` | Run the dashboard in the background |
+| `pm dashboard --stop` | Stop a background dashboard |
 | `pm config` | View current configuration |
 | `pm config set <key> <value>` | Set a configuration value |
 | `pm migrate-existing` | Import manually-created PocketBase instances |
@@ -233,13 +252,14 @@ pm dashboard --daemon
 
 ### Setting a Password
 
-It is recommended to protect the dashboard with a password:
+The dashboard requires a password to start. If no password is configured, you will be prompted to set one:
 
 ```bash
+# Set it in advance (recommended for daemon mode)
 pm config set dashboard_password YOUR_PASSWORD
 ```
 
-If no password is set, the dashboard is accessible without authentication.
+When starting interactively without a password, you will be prompted. In daemon mode (`--daemon`), a password **must** be set beforehand.
 
 ### Dashboard Features
 
@@ -325,7 +345,27 @@ pm create myapp -p 8110 --no-pangolin
 
 ## Backups
 
-PocketManager leverages the [PocketBase backup API](https://pocketbase.io/docs/js-databases/#backup) to create, list, and restore backups of your instances.
+PocketManager leverages the [PocketBase backup API](https://pocketbase.io/docs/api-backups/) to create, list, and restore backups of your instances. All backup endpoints require PocketBase superuser authentication.
+
+### First-Time Setup
+
+After creating an instance, set up the PocketBase superadmin account via the Admin UI:
+
+1. Visit `http://localhost:<port>/_/` in your browser
+2. Create the superadmin account (email + password)
+
+Then register those credentials with PocketManager:
+
+```bash
+pm credentials myapp
+```
+
+You will be prompted for the superadmin email and password. PocketManager verifies them against the live instance and stores them securely (owner-only `0600` permissions in the instance state file). Once configured, all backup commands authenticate automatically.
+
+> **Tip:** It's recommended to create a **dedicated backup superadmin** (e.g. `pm-backup@myapp`) in the PocketBase Admin UI and use that for `pm credentials` instead of your personal account. This way:
+> - Changing your main superadmin password won't break automated backups
+> - If the stored credentials are ever compromised, you can simply delete the dedicated user
+> - PocketBase logs will clearly distinguish backup operations from manual admin actions
 
 ### Creating Backups
 
@@ -430,7 +470,6 @@ pocketmanager/
     auth.py               # Dashboard authentication
     templates/
       dashboard.html      # Single-page dashboard
-    static/               # Static assets (CSS, JS)
 ```
 
 - **cli.py** -- Entry point. Defines all `pm` commands using [Click](https://click.palletsprojects.com/).

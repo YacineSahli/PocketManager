@@ -17,6 +17,32 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
+# Env sanitization
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_ENV_CHARS = {'"', "'", "\n", "\r", "\\"}
+
+
+def _sanitize_env(env: dict[str, str]) -> dict[str, str]:
+    """Validate environment variable keys and values for systemd unit files.
+
+    Rejects characters that could break out of quoting and inject arbitrary
+    systemd directives.
+    """
+    for key, value in env.items():
+        if not key or "=" in key:
+            raise ValueError(f"Invalid environment variable key: {key!r}")
+        for ch in _FORBIDDEN_ENV_CHARS:
+            if ch in key:
+                raise ValueError(f"Forbidden character in env key {key!r}")
+            if ch in value:
+                raise ValueError(
+                    f"Forbidden character in env value for {key!r}: {value!r}"
+                )
+    return env
+
+
+# ---------------------------------------------------------------------------
 # Path / name helpers
 # ---------------------------------------------------------------------------
 
@@ -73,6 +99,7 @@ def generate_service_content(
         The complete service file text.
     """
     env = env or {}
+    _sanitize_env(env) if env else None
     env_lines = ""
     if env:
         env_lines = "\n".join(f'Environment="{k}={v}"' for k, v in env.items())
@@ -456,12 +483,15 @@ def ensure_pocketbase_user() -> bool:
 
     # Create the system user
     try:
+        from pocketmanager.core.config import get as cfg_get
+
+        base_dir = cfg_get("base_dir", "/home/ubuntu/pocketbases")
         subprocess.run(
             [
                 "sudo", "useradd",
                 "--system",
                 "--shell", "/bin/false",
-                "--home", "/home/ubuntu/pocketbases",
+                "--home", base_dir,
                 "pocketbase",
             ],
             check=True,

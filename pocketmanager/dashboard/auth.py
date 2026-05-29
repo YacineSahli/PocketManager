@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import hmac
 
 from flask import request, jsonify
 
@@ -13,8 +14,8 @@ def check_auth(password: str) -> bool:
     config = load_config()
     dashboard_password = config.get("dashboard_password", "")
     if not dashboard_password:
-        return True  # No password set = open access
-    return password == dashboard_password
+        return False  # No password configured = deny access
+    return hmac.compare_digest(password, dashboard_password)
 
 
 def authenticate():
@@ -31,8 +32,6 @@ def requires_auth(f):
         from pocketmanager.core.config import load_config
 
         config = load_config()
-        if not config.get("dashboard_password"):
-            return f(*args, **kwargs)
         auth = request.authorization
         if not auth or not check_auth(auth.password or ""):
             return authenticate()

@@ -212,12 +212,19 @@ def create_instance(
             try:
                 from pocketmanager.core import pangolin as pangolin_mod  # noqa: F811
 
-                pangolin_resource_id = pangolin_mod.create_resource(
+                site_id_raw = get("pangolin.site_id", "")
+                site_id = int(site_id_raw) if site_id_raw else 0
+                result = pangolin_mod.create_resource(
                     name=name,
-                    port=port,
                     subdomain=subdomain,
-                    domain=domain,
+                    domain_id=get("pangolin.default_domain_id", ""),
+                    org_id=get("pangolin.org_id", ""),
+                    site_id=site_id,
+                    target_ip=get("pangolin.target_ip", "127.0.0.1"),
+                    target_port=port,
                 )
+                if result:
+                    pangolin_resource_id = result.get("resourceId")
             except Exception:
                 # Pangolin failure must not block instance creation
                 pangolin_resource_id = None
@@ -290,8 +297,17 @@ def remove_instance(
     # 5. Delete instance directory
     instance_dir = instance.get("instance_dir", "")
     if not keep_data and instance_dir:
+        # Validate that instance_dir is under base_dir to prevent path traversal
+        base_dir = get("base_dir", "/home/ubuntu/pocketbases")
+        resolved_dir = Path(instance_dir).resolve()
+        resolved_base = Path(base_dir).resolve()
+        if not str(resolved_dir).startswith(str(resolved_base) + "/") and resolved_dir != resolved_base:
+            raise ValueError(
+                f"Refusing to delete '{instance_dir}': path is outside base_dir '{base_dir}'. "
+                "Possible state file tampering."
+            )
         subprocess.run(
-            ["sudo", "rm", "-rf", instance_dir],
+            ["sudo", "rm", "-rf", str(resolved_dir)],
             capture_output=True,
             check=False,
         )

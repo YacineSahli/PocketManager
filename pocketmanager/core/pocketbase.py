@@ -6,6 +6,7 @@ All download helpers use only the Python standard library
 
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 import subprocess
@@ -143,10 +144,19 @@ def download_and_cache(version: str) -> Path:
         # Already cached — nothing to do.
         return binary_path
 
-    url = get_download_url(version, arch)
-
-    # Download to a temporary file
+    # Acquire a lock to prevent concurrent downloads of the same version
+    lock_path = cache / f"pocketbase_{version}_linux_{arch}.lock"
+    lock_fd = open(lock_path, "w")
     try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # Re-check after acquiring lock — another process may have downloaded it
+        if binary_path.is_file():
+            return binary_path
+
+        url = get_download_url(version, arch)
+
+        # Download to a temporary file
         fd, tmp_zip = tempfile.mkstemp(suffix=".zip", prefix="pb_download_", dir=cache)
         try:
             with urllib.request.urlopen(url, timeout=300) as resp:
@@ -164,34 +174,37 @@ def download_and_cache(version: str) -> Path:
             except OSError:
                 pass
             raise
-    finally:
+        finally:
+            try:
+                import os
+                os.close(fd)  # type: ignore[possibly-undefined]
+            except OSError:
+                pass
+
+        # Extract the zip
         try:
-            import os
-            os.close(fd)  # type: ignore[possibly-undefined]
-        except OSError:
-            pass
+            with zipfile.ZipFile(tmp_zip, "r") as zf:
+                zf.extractall(dest_dir, filter="data")
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError(f"Downloaded file is not a valid zip: {exc}") from exc
+        finally:
+            try:
+                Path(tmp_zip).unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    # Extract the zip
-    try:
-        with zipfile.ZipFile(tmp_zip, "r") as zf:
-            zf.extractall(dest_dir)
-    except zipfile.BadZipFile as exc:
-        raise RuntimeError(f"Downloaded file is not a valid zip: {exc}") from exc
+        # Make the binary executable
+        binary_path.chmod(0o755)
+
+        if not binary_path.is_file():
+            raise RuntimeError(
+                f"Expected binary not found after extraction: {binary_path}"
+            )
+
+        return binary_path
     finally:
-        try:
-            Path(tmp_zip).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    # Make the binary executable
-    binary_path.chmod(0o755)
-
-    if not binary_path.is_file():
-        raise RuntimeError(
-            f"Expected binary not found after extraction: {binary_path}"
-        )
-
-    return binary_path
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 def ensure_binary(version: str) -> Path:
