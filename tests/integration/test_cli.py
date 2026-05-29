@@ -105,7 +105,7 @@ class TestBasicCLI:
         result = cli_runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "create" in result.output
-        assert "list" in result.output
+        assert "ls" in result.output
         assert "start" in result.output
         assert "stop" in result.output
         assert "remove" in result.output
@@ -117,7 +117,7 @@ class TestBasicCLI:
         """``cli list`` with no instances shows a 'No instances found' message."""
         from pocketmanager.cli import cli
 
-        result = cli_runner.invoke(cli, ["list"])
+        result = cli_runner.invoke(cli, ["ls"])
         assert result.exit_code == 0
         assert "No instances found" in result.output
 
@@ -307,7 +307,7 @@ class TestListInstances:
             )
             assert result.exit_code == 0
 
-        result = cli_runner.invoke(cli, ["list"])
+        result = cli_runner.invoke(cli, ["ls"])
         assert result.exit_code == 0
         assert "alpha" in result.output
         assert "beta" in result.output
@@ -321,7 +321,7 @@ class TestListInstances:
             cli, ["create", "lstest", "-p", "9097", "--no-pangolin"]
         )
 
-        list_result = cli_runner.invoke(cli, ["list"])
+        list_result = cli_runner.invoke(cli, ["ls"])
         ls_result = cli_runner.invoke(cli, ["ls"])
         assert list_result.output == ls_result.output
 

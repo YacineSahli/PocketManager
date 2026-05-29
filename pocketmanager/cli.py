@@ -258,7 +258,7 @@ def create(
 # ---------------------------------------------------------------------------
 
 
-@cli.command("list")
+@cli.command("ls")
 def list_instances_cmd() -> None:
     """List all PocketBase instances."""
     from pocketmanager.core import instance as instance_mod
@@ -287,9 +287,6 @@ def list_instances_cmd() -> None:
         )
 
     console.print(table)
-
-
-cli.add_command(list_instances_cmd, "ls")
 
 
 # ---------------------------------------------------------------------------
