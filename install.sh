@@ -92,9 +92,14 @@ check_requirements() {
         exit 1
     fi
 
-    # python3-venv / ensurepip (required for virtual environment creation)
-    if ! python3 -c "import ensurepip" &>/dev/null; then
-        warn "python3-venv not found, attempting to install..."
+    # python3-venv (required for virtual environment creation)
+    # Actually test venv creation instead of just importing ensurepip,
+    # since ensurepip can be importable but broken (missing bundled wheels).
+    local _test_venv
+    _test_venv=$(mktemp -d)
+    if ! python3 -m venv "$_test_venv" &>/dev/null; then
+        rm -rf "$_test_venv"
+        warn "python3-venv not working, attempting to install..."
         local py_version
         py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
@@ -107,6 +112,7 @@ check_requirements() {
             exit 1
         fi
     else
+        rm -rf "$_test_venv"
         info "python3-venv found"
     fi
 
@@ -144,22 +150,43 @@ create_venv() {
         rm -rf "$VENV_DIR"
     fi
 
-    if ! python3 -m venv "$VENV_DIR"; then
+    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
         error "Failed to create virtual environment."
         warn "Attempting to install python3-venv and retry..."
         local py_version
         py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
             rm -rf "$VENV_DIR"
-            python3 -m venv "$VENV_DIR"
+            if ! python3 -m venv "$VENV_DIR"; then
+                error "venv creation still failing after installing python3-venv."
+                error "Please run: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
+                exit 1
+            fi
         else
-            error "Could not install python3-venv. Please run:"
-            echo -e "  ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
-            echo -e "  Then re-run this installer."
-            exit 1
+            error "Could not install python3-venv. Attempting fallback with --without-pip..."
+            rm -rf "$VENV_DIR"
+            if python3 -m venv --without-pip "$VENV_DIR"; then
+                # Bootstrap pip manually via get-pip.py
+                local get_pip="/tmp/get-pip.py"
+                if curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$get_pip"; then
+                    "$VENV_DIR/bin/python3" "$get_pip"
+                    rm -f "$get_pip"
+                    info "Virtual environment created (pip bootstrapped via get-pip.py)"
+                    return
+                else
+                    error "Failed to download get-pip.py."
+                    echo -e "  Install python3-venv manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
+                    exit 1
+                fi
+            else
+                error "Could not create virtual environment at all."
+                echo -e "  Install python3-venv manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
+                exit 1
+            fi
         fi
+    else
+        info "Virtual environment created at ${VENV_DIR}"
     fi
-    info "Virtual environment created at ${VENV_DIR}"
 }
 
 # ─── Step 4: Install dependencies ───────────────────────────────────────────
