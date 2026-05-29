@@ -674,15 +674,10 @@ def migrate_existing() -> list[dict]:
         except Exception:
             pass
 
-        # Fix ownership of pb_data so the hardened service (User=pocketbase) can write
+        # Fix ownership of the entire instance dir so the hardened service
+        # (User=pocketbase) can read hooks/migrations and write to pb_data.
         try:
-            pb_data = Path(working_dir) / "pb_data"
-            if pb_data.is_dir():
-                subprocess.run(
-                    ["sudo", "chown", "-R", "pocketbase:pocketbase", str(pb_data)],
-                    check=True,
-                    capture_output=True,
-                )
+            set_permissions(working_dir)
         except Exception:
             pass
 
