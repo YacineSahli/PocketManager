@@ -62,7 +62,7 @@ PocketManager uses the following paths on your VPS:
 ## Quick Install (Automated)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/yacinesahli/PocketManager/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/yacinesahli/PocketManager/master/install.sh | bash
 ```
 
 The installer will:
