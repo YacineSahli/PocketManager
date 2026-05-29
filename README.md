@@ -316,11 +316,28 @@ The `remove` command requires double confirmation: it first asks whether you hav
 
 PocketManager integrates with [Pangolin](https://github.com/fosrl/pangolin) to automatically create public HTTPS URLs for your PocketBase instances. When Pangolin is configured, each new instance can be assigned a domain or subdomain, and PocketManager will create the necessary proxy resources automatically.
 
+### Creating a Pangolin API Key
+
+You need an **Organization API Key** with resource management permissions. PocketManager only calls organization-scoped endpoints, so an org-level key is sufficient — no Root API Key needed.
+
+1. Open your **Pangolin dashboard** in a browser
+2. Navigate to **Organization → API Keys**
+3. Click **Create API Key**
+4. Give it a descriptive name (e.g. `"PocketManager"`)
+5. Grant it **resource management** permissions (create/delete resources, set targets)
+6. **Copy the key immediately** — it will not be shown again
+
+You will also need three IDs from your Pangolin dashboard:
+
+| ID | Where to Find It |
+|----|------------------|
+| `org_id` | Organization settings page |
+| `default_domain_id` | Organization → Domains |
+| `site_id` | Sites page (the site that connects to your VPS) |
+
 ### Configuration
 
-1. Obtain an API key from your Pangolin dashboard
-2. Note your organization ID, domain ID, and site ID
-3. Set the values in PocketManager:
+Set all four values in PocketManager:
 
 ```bash
 pm config set pangolin.api_key YOUR_API_KEY
