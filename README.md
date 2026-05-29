@@ -110,10 +110,12 @@ PocketManager stores its configuration in `~/pocketmanager/config.json`. The ful
   },
   "pangolin": {
     "dashboard_url": "https://apps.yacinesahli.com",
-    "api_url": "https://apps.yacinesahli.com/api/v1",
+    "api_url": "https://api.apps.yacinesahli.com/v1",
     "api_key": "",
     "org_id": "",
     "default_domain_id": "",
+    "default_domain": "",
+    "subdomain_suffix": "",
     "site_id": ""
   },
   "defaults": {
@@ -131,9 +133,12 @@ PocketManager stores its configuration in `~/pocketmanager/config.json`. The ful
 | `dashboard_port` | Port for the web dashboard (default: 8888) |
 | `dashboard_password` | Password to protect the web dashboard (required — you will be prompted on first launch) |
 | `port_range` | Min/max port range for automatic port allocation |
+| `pangolin.api_url` | Pangolin **Integration API** base URL (e.g. `https://api.apps.example.com/v1`) |
 | `pangolin.api_key` | API key for your Pangolin instance |
 | `pangolin.org_id` | Organization ID in Pangolin |
 | `pangolin.default_domain_id` | Domain ID to use for subdomain-based instances |
+| `pangolin.default_domain` | Base domain used to build public URLs in the CLI output |
+| `pangolin.subdomain_suffix` | Optional suffix appended to subdomains (e.g. `apps` for `*.apps.example.com`) |
 | `pangolin.site_id` | Site ID for Pangolin resource creation |
 | `defaults.auto_backups_enabled` | Enable automatic daily backups |
 | `defaults.auto_backups_cron` | Cron schedule for automatic backups |
@@ -316,12 +321,32 @@ The `remove` command requires double confirmation: it first asks whether you hav
 
 PocketManager integrates with [Pangolin](https://github.com/fosrl/pangolin) to automatically create public HTTPS URLs for your PocketBase instances. When Pangolin is configured, each new instance can be assigned a domain or subdomain, and PocketManager will create the necessary proxy resources automatically.
 
+### Enabling the Integration API
+
+> **Required:** PocketManager communicates with Pangolin via the **Integration API**, which is **not enabled by default**. You must enable it before configuring PocketManager.
+>
+> Follow the official guide: [Pangolin Integration API Setup](https://docs.pangolin.net/self-host/advanced/integration-api)
+
+In your Pangolin `config/config.yml`, add:
+
+```yaml
+flags:
+  enable_integration_api: true
+
+server:
+  integration_port: 3003  # default port; change if needed
+```
+
+Then expose the integration API through your reverse proxy. For example, with Traefik, add a router pointing to `http://pangolin:3003` on a subdomain like `api.apps.yacinesahli.com`. The API base URL will be `https://api.apps.yacinesahli.com/v1`.
+
+You can verify the integration API is running by visiting `https://<your-api-url>/v1/` — it should return `{"message":"Healthy"}`. The full OpenAPI spec is available at `/v1/docs/`.
+
 ### Creating a Pangolin API Key
 
-You need an **Organization API Key** with resource management permissions. PocketManager only calls organization-scoped endpoints, so an org-level key is sufficient — no Root API Key needed.
+You need a **Pangolin API Key** with resource management permissions. A Root API Key (created from Admin → API Keys) allows PocketManager to auto-discover your org, domains, and sites. An Org-level key also works if you already know your org ID.
 
 1. Open your **Pangolin dashboard** in a browser
-2. Navigate to **Organization → API Keys**
+2. Navigate to **Admin → API Keys** (for a Root key) or **Organization → API Keys** (for an Org key)
 3. Click **Create API Key**
 4. Give it a descriptive name (e.g. `"PocketManager"`)
 5. Grant it **resource management** permissions (create/delete resources, set targets)
@@ -331,25 +356,38 @@ You will also need three IDs from your Pangolin dashboard:
 
 | ID | Where to Find It |
 |----|------------------|
-| `org_id` | Organization settings page |
-| `default_domain_id` | Organization → Domains |
-| `site_id` | Sites page (the site that connects to your VPS) |
+| `org_id` | Visible in the dashboard URL: `https://apps.example.com/<org_id>/...` |
+| `default_domain_id` | Organization → Domains (e.g. `domain1`) |
+| `site_id` | Sites page — the site connected to your VPS (e.g. `1`) |
+
+### Subdomain Suffix
+
+If your Pangolin domain uses a subdomain pattern (e.g. resources are at `*.apps.yacinesahli.com` instead of `*.yacinesahli.com`), set the `subdomain_suffix` config. PocketManager will automatically append it when creating resources:
+
+```bash
+pm config set pangolin.subdomain_suffix apps
+```
+
+With this setting, `pm create myapp -s myapp` will create the resource at `myapp.apps.yacinesahli.com` instead of `myapp.yacinesahli.com`.
 
 ### Configuration
 
-Set all four values in PocketManager:
+Set all values in PocketManager:
 
 ```bash
+pm config set pangolin.api_url https://api.apps.yacinesahli.com/v1   # Integration API URL
 pm config set pangolin.api_key YOUR_API_KEY
 pm config set pangolin.org_id YOUR_ORG_ID
 pm config set pangolin.default_domain_id YOUR_DOMAIN_ID
 pm config set pangolin.site_id YOUR_SITE_ID
+pm config set pangolin.default_domain yacinesahli.com
+pm config set pangolin.subdomain_suffix apps   # optional, see above
 ```
 
 ### How It Works
 
 - When creating an instance with `pm create myapp -d api.example.com`, PocketManager creates a Pangolin resource that proxies `https://api.example.com` to the instance's local port.
-- When creating with a subdomain (`-s myapp`), PocketManager uses the configured `default_domain` to build `https://myapp.<default_domain>`.
+- When creating with a subdomain (`-s myapp`), PocketManager uses the configured `default_domain` and `subdomain_suffix` to build the full URL (e.g. `https://myapp.apps.yacinesahli.com`).
 - When removing an instance, the corresponding Pangolin resource is also deleted.
 
 To skip Pangolin integration for a single instance, use the `--no-pangolin` flag:
