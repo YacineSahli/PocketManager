@@ -248,7 +248,13 @@ migrate_existing() {
     done
     echo ""
 
-    read -rp "Import them into PocketManager? [Y/n] " answer
+    if ! [[ -t 0 ]]; then
+        warn "Non-interactive terminal detected. Skipping migration."
+        warn "Run 'pm migrate-existing' later to import these instances."
+        return
+    fi
+
+    read -rp "Import them into PocketManager? [Y/n] " answer || answer=""
     answer="${answer:-Y}"
 
     if [[ "$answer" =~ ^[Yy]$ ]]; then
