@@ -56,14 +56,28 @@ def _build_url(instance: dict) -> str:
     return "(unknown)"
 
 
-def _complete_instance_name(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[str]:
-    """Shell autocompletion for instance names."""
-    try:
-        from pocketmanager.core.state import get_all_instances
+class InstanceNameParam(click.ParamType):
+    """Click argument type with shell autocompletion for existing instance names."""
 
-        return [i["name"] for i in get_all_instances() if i["name"].startswith(incomplete)]
-    except Exception:
-        return []
+    name = "instance_name"
+
+    def shell_complete(self, ctx: click.Context, param: click.Parameter, incomplete: str) -> list[click.shell_completion.CompletionItem]:
+        try:
+            from pocketmanager.core.state import get_all_instances
+
+            return [
+                click.shell_completion.CompletionItem(i["name"])
+                for i in get_all_instances()
+                if i["name"].startswith(incomplete)
+            ]
+        except Exception:
+            return []
+
+    def convert(self, value: str, param: click.Parameter | None, ctx: click.Context | None) -> str:
+        return value
+
+
+INSTANCE_NAME = InstanceNameParam()
 
 
 def _format_uptime(seconds: float | None) -> str:
@@ -305,7 +319,7 @@ def list_instances_cmd() -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def start(name: str) -> None:
     """Start a PocketBase instance."""
     from pocketmanager.core import instance as instance_mod
@@ -329,7 +343,7 @@ def start(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def stop(name: str) -> None:
     """Stop a PocketBase instance."""
     from pocketmanager.core import instance as instance_mod
@@ -353,7 +367,7 @@ def stop(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def restart(name: str) -> None:
     """Restart a PocketBase instance."""
     from pocketmanager.core import instance as instance_mod
@@ -377,7 +391,7 @@ def restart(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.option("--keep-data", is_flag=True, default=False, help="Keep instance data on disk.")
 @click.option("--force", is_flag=True, default=False, help="Skip confirmation prompts.")
 def remove(name: str, keep_data: bool, force: bool) -> None:
@@ -445,7 +459,7 @@ def remove(name: str, keep_data: bool, force: bool) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def status(name: str) -> None:
     """Show detailed status for a PocketBase instance."""
     from pocketmanager.core import instance as instance_mod
@@ -490,7 +504,7 @@ def status(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.option("-n", "--lines", default=100, help="Number of log lines to show.")
 @click.option("-f", "--follow", is_flag=True, default=False, help="Follow log output.")
 def logs(name: str, lines: int, follow: bool) -> None:
@@ -579,7 +593,7 @@ def healthcheck_cmd() -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.option("--download", is_flag=True, default=False, help="Download the backup after creation.")
 @click.option("--name", "backup_name", default=None, help="Custom backup name.")
 def backup(name: str, download: bool, backup_name: str | None) -> None:
@@ -654,7 +668,7 @@ def backup(name: str, download: bool, backup_name: str | None) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def backups(name: str) -> None:
     """List backups for a PocketBase instance."""
     from pocketmanager.core import backup as backup_mod
@@ -703,7 +717,7 @@ def backups(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.argument("backup_key")
 def restore(name: str, backup_key: str) -> None:
     """Restore a PocketBase instance from a backup."""
@@ -751,7 +765,7 @@ def restore(name: str, backup_key: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.option("--version", "pb_version", default=None, help="Target PocketBase version.")
 def update(name: str, pb_version: str | None) -> None:
     """Update a PocketBase instance to a new version."""
@@ -1241,7 +1255,7 @@ def _require_backup_auth(name: str, instance: dict) -> str | None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 def credentials(name: str) -> None:
     """Set or update PocketBase superadmin credentials for an instance.
 
@@ -1294,7 +1308,7 @@ def credentials(name: str) -> None:
 
 
 @cli.command()
-@click.argument("name", shell_complete=_complete_instance_name)
+@click.argument("name", type=INSTANCE_NAME)
 @click.option("--password", "password_val", default=None, help="Set password authentication.")
 @click.option("--no-password", is_flag=True, default=False, help="Remove password authentication.")
 def auth(name: str, password_val: str | None, no_password: bool) -> None:
