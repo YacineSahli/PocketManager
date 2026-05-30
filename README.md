@@ -732,11 +732,37 @@ All settings can also be configured directly in `config.json`:
     "username": "u123456-sub1",
     "password": "your-password",
     "private_key_path": "",
-    "remote_path": "/backups",
+    "remote_path": "backups",
     "max_remote_backups": 30
   }
 }
 ```
+
+#### Automated Off-Site Backups with Cron
+
+Use `pm backup-all --push` to back up every instance and upload to SFTP in one command. Wire it into system cron for fully automated off-site backups:
+
+```bash
+# Edit crontab
+sudo crontab -e
+```
+
+Add a line like:
+
+```
+# Back up all instances and push to SFTP every day at 03:00
+0 3 * * * /usr/local/bin/pm backup-all --push >> /var/log/pm-backup.log 2>&1
+```
+
+> **Note:** Adjust the path to `pm` if installed differently (check with `which pm`). The log file will rotate naturally; consider adding logrotate for long-term use.
+
+You can also run it manually to test:
+
+```bash
+pm backup-all --push
+```
+
+This displays a table showing each instance's backup status and SFTP upload result.
 
 ---
 

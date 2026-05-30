@@ -1282,6 +1282,103 @@ def push_backup(name: str, backup_key: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# backup-all
+# ---------------------------------------------------------------------------
+
+
+@cli.command("backup-all")
+@click.option("--push", "push_remote", is_flag=True, default=False,
+              help="Upload each backup to SFTP after creation.")
+def backup_all(push_remote: bool) -> None:
+    """Create a backup of all PocketBase instances.
+
+    Iterates every registered instance, creates a backup, and optionally
+    pushes it to the configured SFTP server.  Designed for use in cron:
+
+    \b
+      0 3 * * * /usr/local/bin/pm backup-all --push >> /var/log/pm-backup.log 2>&1
+    """
+    from pocketmanager.core import backup as backup_mod
+    from pocketmanager.core.sftp import cleanup_remote_backups, upload_instance_backup
+    from pocketmanager.core.state import get_all_instances
+
+    instances = get_all_instances()
+    if not instances:
+        console.print("[dim]No instances found.[/dim]")
+        return
+
+    sftp_config = None
+    if push_remote:
+        sftp_config = _require_sftp_config()
+        if sftp_config is None:
+            sys.exit(1)
+
+    table = Table(title="Backup All Instances")
+    table.add_column("Instance", style="cyan")
+    table.add_column("Backup", no_wrap=True)
+    table.add_column("Status", justify="center")
+    if push_remote:
+        table.add_column("SFTP", justify="center")
+
+    for inst in instances:
+        inst_name = inst.get("name", "")
+        port = inst.get("port")
+        if not port:
+            row = [inst_name, "-", "[bold red]no port[/bold red]"]
+            if push_remote:
+                row.append("-")
+            table.add_row(*row)
+            continue
+
+        instance_url = f"http://localhost:{port}"
+        token = _require_backup_auth(inst_name, inst)
+
+        if token is None:
+            row = [inst_name, "-", "[bold red]no credentials[/bold red]"]
+            if push_remote:
+                row.append("-")
+            table.add_row(*row)
+            continue
+
+        # Create backup
+        ok = backup_mod.create_backup(instance_url, auth_token=token)
+        if not ok:
+            row = [inst_name, "-", "[bold red]failed[/bold red]"]
+            if push_remote:
+                row.append("-")
+            table.add_row(*row)
+            continue
+
+        # Find the backup we just created
+        all_backups = backup_mod.list_backups(instance_url, auth_token=token)
+        all_backups.sort(key=lambda b: b.get("modified", ""), reverse=True)
+        backup_key = all_backups[0].get("key", "unknown") if all_backups else "unknown"
+
+        row = [inst_name, backup_key, "[bold green]ok[/bold green]"]
+
+        if push_remote and sftp_config:
+            instance_dir = inst.get("instance_dir", "")
+            ok_sftp, result = upload_instance_backup(
+                backup_key, inst_name, instance_dir, sftp_config, auth_token=token,
+            )
+            if ok_sftp:
+                row.append("[bold green]uploaded[/bold green]")
+                # Prune old remote backups
+                max_keep = sftp_config.get("max_remote_backups", 30)
+                deleted_count, _ = cleanup_remote_backups(
+                    inst_name, sftp_config, max_keep=max_keep,
+                )
+                if deleted_count:
+                    row[-1] = f"[bold green]uploaded[/bold green] [dim]({deleted_count} pruned)[/dim]"
+            else:
+                row.append(f"[bold red]{result}[/bold red]")
+
+        table.add_row(*row)
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # update
 # ---------------------------------------------------------------------------
 
