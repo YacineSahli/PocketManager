@@ -1417,10 +1417,12 @@ def sftp_backup_schedule(
     enable: bool | None,
     cron_expr: str | None,
 ) -> None:
-    """Configure automatic SFTP off-site backup via system cron.
+    """Configure automatic SFTP off-site backup via a systemd timer.
 
-    When enabled, creates a system cron entry that runs
+    When enabled, creates a systemd timer unit that runs
     ``pm backup-all --push`` on the given schedule.
+
+    The timer runs as the user who installed PM (not root).
 
     \b
     Examples:
@@ -1446,11 +1448,11 @@ def sftp_backup_schedule(
             status_parts.append("[dim]SFTP:[/dim]      not configured")
 
         if cron_info["active"]:
-            status_parts.append(f"[bold green]Cron:[/bold green]      enabled")
+            status_parts.append(f"[bold green]Timer:[/bold green]     enabled")
             status_parts.append(f"[bold]Schedule:[/bold]  {cron_info['schedule']}")
             status_parts.append(f"[dim]Command:[/dim]   {cron_info['command']}")
         else:
-            status_parts.append("[dim]Cron:[/dim]      disabled")
+            status_parts.append("[dim]Timer:[/dim]     disabled")
 
         console.print(Panel(
             "\n".join(status_parts),
@@ -1463,9 +1465,9 @@ def sftp_backup_schedule(
         # Disable
         ok = remove_sftp_cron()
         if ok:
-            console.print("[bold green]SFTP backup cron removed.[/bold green]")
+            console.print("[bold green]SFTP backup timer removed.[/bold green]")
         else:
-            console.print("[bold red]Error: Failed to remove cron entry. Try with sudo.[/bold red]")
+            console.print("[bold red]Error: Failed to remove timer. Try with sudo.[/bold red]")
             sys.exit(1)
         return
 
@@ -1490,13 +1492,13 @@ def sftp_backup_schedule(
     ok = set_sftp_cron(schedule)
     if ok:
         console.print(
-            f"[bold green]SFTP backup cron installed.[/bold green]\n"
+            f"[bold green]SFTP backup timer installed.[/bold green]\n"
             f"  Schedule: {schedule}\n"
             f"  Command:  pm backup-all --push\n"
-            f"  Log:      /var/log/pm-backup.log"
+            f"  Logs:     journalctl -u pm-sftp-backup.service"
         )
     else:
-        console.print("[bold red]Error: Failed to install cron entry. Try with sudo.[/bold red]")
+        console.print("[bold red]Error: Failed to install timer. Try with sudo.[/bold red]")
         sys.exit(1)
 
 
@@ -1512,10 +1514,10 @@ def backup_all(push_remote: bool) -> None:
     """Create a backup of all PocketBase instances.
 
     Iterates every registered instance, creates a backup, and optionally
-    pushes it to the configured SFTP server.  Designed for use in cron:
+    pushes it to the configured SFTP server.
 
-    \b
-      0 3 * * * /usr/local/bin/pm backup-all --push >> /var/log/pm-backup.log 2>&1
+    Automatically run by the ``pm-sftp-backup`` systemd timer when
+    SFTP backup scheduling is enabled (``pm sftp-backup-schedule --enable``).
     """
     from pocketmanager.core import backup as backup_mod
     from pocketmanager.core.sftp import cleanup_remote_backups, upload_instance_backup
