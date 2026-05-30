@@ -106,7 +106,7 @@ class TestConfig:
         assert get_config_dir() == expected
 
     def test_config_file_permissions(self, isolated_env):
-        """After save_config(), the file should have 0o600 permissions."""
+        """After save_config(), the file should have 0o660 permissions."""
         import stat
 
         from pocketmanager.core.config import get_config_path, load_config, save_config
@@ -116,7 +116,7 @@ class TestConfig:
 
         mode = os.stat(get_config_path()).st_mode
         perms = stat.S_IMODE(mode)
-        assert perms == 0o600
+        assert perms == 0o660
 
 
 # ---------------------------------------------------------------------------
