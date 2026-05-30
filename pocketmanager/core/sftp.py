@@ -47,6 +47,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _resolve_host(host: str, port: int) -> tuple[str, int]:
+    """Resolve *host* to an IPv4 address, skipping unreachable IPv6.
+
+    Oracle Cloud VPSes often lack IPv6 but DNS returns AAAA records.
+    Paramiko tries IPv6 first and fails with "Network is unreachable"
+    instead of falling back.  This resolves the hostname ourselves and
+    returns a working ``(ip, port)`` pair.
+    """
+    import socket
+
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            results = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+            if results:
+                addr = results[0][4]
+                ip: str = addr[0]  # type: ignore[assignment]
+                # Quick reachability check
+                s = socket.socket(family, socket.SOCK_STREAM)
+                s.settimeout(5)
+                try:
+                    s.connect(addr)
+                    s.close()
+                    return ip, port
+                except OSError:
+                    s.close()
+                    continue
+        except socket.gaierror:
+            continue
+
+    # Fallback: just return the hostname as-is and let paramiko try
+    return host, port
+
+
 def _create_client(sftp_config: dict[str, Any]) -> paramiko.SSHClient:
     """Create and return a connected :class:`paramiko.SSHClient`.
 
@@ -63,9 +96,13 @@ def _create_client(sftp_config: dict[str, Any]) -> paramiko.SSHClient:
     password: str = sftp_config.get("password", "")
     key_path: str = sftp_config.get("private_key_path", "")
 
+    # Resolve hostname to a reachable IP (handles IPv6-only DNS on
+    # hosts without IPv6 connectivity, e.g. Oracle Cloud VPSes).
+    resolved_host, resolved_port = _resolve_host(host, port)
+
     connect_kwargs: dict[str, Any] = {
-        "hostname": host,
-        "port": port,
+        "hostname": resolved_host,
+        "port": resolved_port,
         "username": username,
         "timeout": 15,
         "allow_agent": False,
