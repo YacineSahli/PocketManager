@@ -108,18 +108,17 @@ def _get_disk_usage(path: Path) -> str:
         return "unknown"
 
 
-def _create_superadmin(port: int, binary_path: str) -> tuple[str, str] | None:
+def _create_superadmin(binary_path: str) -> tuple[str, str] | None:
     """Attempt to create the first superadmin on a fresh PocketBase instance.
 
-    Generates random credentials and creates the admin via the PocketBase
-    CLI ``superuser upsert`` command, which works without authentication on
-    all supported versions (including >= 0.23 where the REST API returns 403).
+    Uses the PocketBase CLI ``superuser upsert`` command which writes directly
+    to the database.  Must be called **before** the service is started to avoid
+    SQLite database locking issues.
 
     Returns ``(email, password)`` on success, or ``None`` on failure.
     """
     import secrets
     import string
-    import time
 
     email = "admin@pocketbase.local"
     alphabet = string.ascii_letters + string.digits
@@ -127,14 +126,6 @@ def _create_superadmin(port: int, binary_path: str) -> tuple[str, str] | None:
 
     # Derive pb_data directory from binary_path (binary lives inside instance dir)
     pb_data_dir = str(Path(binary_path).resolve().parent / "pb_data")
-
-    # Wait for the instance to respond (up to ~30 s)
-    for _ in range(15):
-        if _health_check(port):
-            break
-        time.sleep(2)
-    else:
-        return None
 
     try:
         result = subprocess.run(
@@ -243,15 +234,12 @@ def create_instance(
     # 10. Create systemd service
     create_service(name, port, str(instance_dir), env=env)
 
-    # 11. Start service
-    start_service(name)
-
-    # 12. Auto-create superadmin (best effort, non-blocking)
+    # 11. Auto-create superadmin (before starting service to avoid DB lock)
     admin_email: str | None = None
     admin_password: str | None = None
     admin_warning: str | None = None
     try:
-        creds = _create_superadmin(port, str(binary_path))
+        creds = _create_superadmin(str(binary_path))
         if creds:
             admin_email, admin_password = creds
         else:
@@ -266,6 +254,9 @@ def create_instance(
             f"Visit the Admin UI at http://localhost:{port}/_/ "
             f"to create one manually, then run 'pm credentials {name}'."
         )
+
+    # 12. Start service
+    start_service(name)
 
     # 13. Pangolin integration (optional, non-blocking)
     pangolin_resource_id: str | None = None
