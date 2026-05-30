@@ -299,15 +299,18 @@ def list_instances_cmd() -> None:
     table.add_column("Status", justify="center")
     table.add_column("Version", style="dim")
     table.add_column("URL")
+    table.add_column("Public URL", style="green")
 
     for inst in instances:
         active = inst.get("active", False)
+        public_url = _build_url(inst) if inst.get("pangolin_resource_id") else "—"
         table.add_row(
             inst.get("name", ""),
             str(inst.get("port", "")),
             _status_style(active),
             inst.get("version", ""),
             _build_url(inst),
+            public_url,
         )
 
     console.print(table)
@@ -486,9 +489,10 @@ def status(name: str) -> None:
         f"[bold]Backups:[/bold]      {info.get('backup_count', 0)}"
     )
 
-    # Pangolin auth status
+    # Pangolin public URL & auth status
     resource_id = info.get("pangolin_resource_id")
     if resource_id:
+        panel_content += f"\n[bold]Public URL:[/bold]   {_build_url(info)}"
         panel_content += f"\n[bold]Auth:[/bold]         {_format_auth_status(info.get('pangolin_auth'))}"
 
     if env_vars:
