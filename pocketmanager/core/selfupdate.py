@@ -1,15 +1,16 @@
 """Self-update mechanism for PocketManager.
 
-Runs ``git pull`` in the installation directory and reports the result.
-
-The install root is determined by walking up from this file to the project
-root (where ``pyproject.toml`` lives).
+Compares the local git commit with the remote GitHub repository and installs
+the latest version via ``pip`` when an update is available.
 """
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
+# GitHub repository for PocketManager
+_REPO_URL = "git+https://github.com/YacineSahli/PocketManager.git@master"
 
 
 # ---------------------------------------------------------------------------
@@ -90,16 +91,32 @@ def check_for_update() -> dict | None:
 
 
 def perform_update() -> bool:
-    """Run ``git pull`` in the installation directory.
+    """Reinstall PocketManager from the GitHub repository via pip.
+
+    Uses ``--force-reinstall`` and ``--no-cache-dir`` to ensure the latest
+    code is fetched and installed, bypassing any pip caching issues.
 
     Returns ``True`` on success, ``False`` on failure.
     """
-    root = _install_root()
-
-    result = _git("pull", cwd=root)
-    if result.returncode != 0:
-        print(f"git pull failed: {result.stderr.strip()}")
+    try:
+        result = subprocess.run(
+            [
+                "pip", "install",
+                "--user",
+                "--break-system-packages",
+                "--force-reinstall",
+                "--no-cache-dir",
+                _REPO_URL,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
-    print(result.stdout.strip())
+    if result.returncode != 0:
+        print(f"pip install failed: {result.stderr.strip()}")
+        return False
+
     return True

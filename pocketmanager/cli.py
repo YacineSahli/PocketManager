@@ -15,6 +15,7 @@ from typing import Any
 import click
 from rich.console import Console
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 
 from pocketmanager import __version__
@@ -213,7 +214,7 @@ def create(
     admin_email = result.get("superadmin_email")
     admin_password = result.get("superadmin_password")
     if not (admin_email and admin_password):
-        panel_content += f"\n[bold]Admin UI:[/bold]  {url}/_/"
+        panel_content += f"\n[bold]Dashboard URL:[/bold] {url}/_/"
 
     console.print(Panel(panel_content, title="[bold green]Instance Created[/bold green]", border_style="green"))
 
@@ -284,7 +285,7 @@ def list_instances_cmd() -> None:
     table.add_column("Version", style="dim")
     table.add_column("Local Backup", justify="center")
     table.add_column("SFTP Backup", justify="center")
-    table.add_column("Dashboard URL", style="green")
+    table.add_column("Dashboard URL", style="green", min_width=20, ratio=2)
 
     for inst in instances:
         active = inst.get("active", False)
@@ -353,16 +354,12 @@ def stop(name: str) -> None:
     from pocketmanager.core import instance as instance_mod
 
     try:
-        success = instance_mod.stop_instance(name)
+        instance_mod.stop_instance(name)
     except (ValueError, RuntimeError) as exc:
         console.print(f"[bold red]Error: {exc}[/bold red]")
         sys.exit(1)
 
-    if success:
-        console.print(f"[bold green]Instance '{name}' stopped successfully.[/bold green]")
-    else:
-        console.print(f"[bold red]Failed to stop instance '{name}'.[/bold red]")
-        sys.exit(1)
+    console.print(f"[bold green]Instance '{name}' stopped successfully.[/bold green]")
 
 
 # ---------------------------------------------------------------------------
@@ -1727,7 +1724,7 @@ def config(args: tuple[str, ...], reveal: bool) -> None:
         import json as _json
 
         pretty = _json.dumps(current_config, indent=2, ensure_ascii=False)
-        console.print(pretty, syntax="json")
+        console.print(Syntax(pretty, "json", theme="monokai"))
         return
 
     if len(args) >= 2 and args[0] == "set":
@@ -2056,7 +2053,7 @@ def _require_backup_auth(name: str, instance: dict) -> str | None:
         console.print(
             "[bold yellow]No PocketBase superadmin credentials configured "
             f"for '{name}'.[/bold yellow]\n"
-            f"[dim]Set them with: pm credentials {name}[/dim]"
+            f"[dim]Create one via the admin UI, then run: pm credentials {name}[/dim]"
         )
         return None
 
