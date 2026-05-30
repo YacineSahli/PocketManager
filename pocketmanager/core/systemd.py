@@ -197,11 +197,13 @@ def create_service(
     service_path = get_service_path(name)
     content = generate_service_content(name, port, working_dir, env)
 
-    # Write the service file via sudo tee
+    # Write the service file via sudo tee (redirect stdout to /dev/null to
+    # avoid dumping the unit file contents to the terminal).
     subprocess.run(
         ["sudo", "tee", str(service_path)],
         input=content.encode("utf-8"),
         check=True,
+        stdout=subprocess.DEVNULL,
     )
 
     # Reload systemd so it picks up the new unit
@@ -314,6 +316,7 @@ def modify_service(
         ["sudo", "tee", str(service_path)],
         input=new_content.encode("utf-8"),
         check=True,
+        stdout=subprocess.DEVNULL,
     )
 
     subprocess.run(

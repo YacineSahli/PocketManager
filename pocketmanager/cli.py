@@ -29,29 +29,12 @@ console = Console()
 
 
 def _build_url(instance: dict) -> str:
-    """Build the public URL for an instance from its domain/subdomain config."""
+    """Build the public URL for an instance from its domain config."""
     domain = instance.get("domain")
-    subdomain = instance.get("subdomain")
     port = instance.get("port")
-    name = instance.get("name", "")
 
     if domain:
         return f"https://{domain}"
-    if subdomain:
-        # Default base domain from pangolin config
-        try:
-            from pocketmanager.core.config import get as _cfg_get
-
-            base = _cfg_get("pangolin.default_domain", "")
-            suffix = _cfg_get("pangolin.subdomain_suffix", "")
-            display_subdomain = subdomain
-            if suffix and not subdomain.endswith(suffix.lstrip(".")):
-                display_subdomain = f"{subdomain}.{suffix.lstrip('.')}"
-            if base:
-                return f"https://{display_subdomain}.{base}"
-        except Exception:
-            pass
-        return f"https://{subdomain}.example.com"
     if port:
         return f"http://localhost:{port}"
     return "(unknown)"
@@ -151,8 +134,7 @@ def cli() -> None:
 @cli.command()
 @click.argument("name")
 @click.option("-p", "--port", type=int, default=None, help="HTTP port for the instance.")
-@click.option("-d", "--domain", default=None, help="Custom domain (e.g. api.example.com).")
-@click.option("-s", "--subdomain", default=None, help="Subdomain label.")
+@click.option("-d", "--domain", default=None, help="Full domain (e.g. myapp.apps.example.com).")
 @click.option(
     "-e",
     "--env",
@@ -165,7 +147,6 @@ def create(
     name: str,
     port: int | None,
     domain: str | None,
-    subdomain: str | None,
     env: tuple[str, ...],
     pb_version: str | None,
     no_pangolin: bool,
@@ -174,7 +155,7 @@ def create(
     from pocketmanager.core import instance as instance_mod
 
     # Interactive mode: no options provided
-    interactive = port is None and domain is None and subdomain is None and not env and pb_version is None
+    interactive = port is None and domain is None and not env and pb_version is None
 
     env_dict: dict[str, str] = {}
     for item in env:
@@ -198,8 +179,6 @@ def create(
         port = click.prompt("HTTP port", type=int, default=suggested_port)
         domain_str: str = click.prompt("Domain (leave blank for none)", type=str, default="")
         domain = domain_str.strip() or None
-        subdomain_str: str = click.prompt("Subdomain (leave blank for none)", type=str, default="")
-        subdomain = subdomain_str.strip() or None
         if click.confirm("Add environment variables?", default=False):
             while True:
                 key = click.prompt("Variable name (leave blank to finish)", type=str, default="")
@@ -213,7 +192,6 @@ def create(
         result = instance_mod.create_instance(
             name=name,
             port=port,
-            subdomain=subdomain,
             domain=domain,
             env=env_dict or None,
             version=pb_version,
@@ -310,7 +288,8 @@ def list_instances_cmd() -> None:
 
     for inst in instances:
         active = inst.get("active", False)
-        dashboard_url = f"{_build_url(inst)}/_/" if inst.get("pangolin_resource_id") else "—"
+        url = _build_url(inst)
+        dashboard_url = f"{url}/_/" if url != "(unknown)" else "—"
 
         # Local backup status
         auto_backup = inst.get("auto_backup", False)
@@ -649,10 +628,14 @@ def status(name: str) -> None:
         f"[bold]Backups:[/bold]      {info.get('backup_count', 0)}"
     )
 
-    # Pangolin dashboard URL & auth status
+    # Domain-based dashboard URL
+    url = _build_url(info)
+    if url != "(unknown)":
+        panel_content += f"\n[bold]Dashboard URL:[/bold] {url}/_/"
+
+    # Pangolin auth status
     resource_id = info.get("pangolin_resource_id")
     if resource_id:
-        panel_content += f"\n[bold]Dashboard URL:[/bold] {_build_url(info)}/_/"
         panel_content += f"\n[bold]Auth:[/bold]         {_format_auth_status(info.get('pangolin_auth'))}"
 
     if env_vars:
@@ -1876,11 +1859,8 @@ def _setup_dashboard_pangolin(config: dict, dash_port: int, daemon: bool) -> Non
 
     resource_name = resource_name.strip()
 
-    # Determine subdomain
+    # Use the resource name directly as the subdomain for Pangolin
     subdomain = resource_name
-    suffix = pangolin_cfg.get("subdomain_suffix", "")
-    if suffix and not subdomain.endswith(suffix.lstrip(".")):
-        subdomain = f"{subdomain}.{suffix.lstrip('.')}"
 
     domain_id = pangolin_cfg.get("default_domain_id", "")
     site_id_raw = pangolin_cfg.get("site_id", "")

@@ -68,7 +68,6 @@ def create_instance():
         instance = create_instance(
             name=data["name"],
             port=data.get("port"),
-            subdomain=data.get("subdomain"),
             domain=data.get("domain"),
             env=data.get("env"),
             version=data.get("version"),
