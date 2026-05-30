@@ -117,8 +117,8 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
     "max": 8999
   },
   "pangolin": {
-    "dashboard_url": "https://apps.yacinesahli.com",
-    "api_url": "https://api.apps.yacinesahli.com/v1",
+    "dashboard_url": "https://apps.example.com",
+    "api_url": "http://localhost:3003/v1",
     "api_key": "",
     "org_id": "",
     "default_domain_id": "",
@@ -141,13 +141,13 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 | `dashboard_port` | Port for the web dashboard (default: 8888) |
 | `dashboard_password` | Password to protect the web dashboard (required — you will be prompted on first launch) |
 | `port_range` | Min/max port range for automatic port allocation |
-| `pangolin.api_url` | Pangolin **Integration API** base URL (e.g. `https://api.apps.example.com/v1`) |
+| `pangolin.api_url` | Pangolin **Integration API** base URL. Use `http://localhost:3003/v1` for same-host (recommended) or `https://api.example.com/v1` for public access |
 | `pangolin.api_key` | API key for your Pangolin instance |
-| `pangolin.org_id` | Organization ID in Pangolin |
-| `pangolin.default_domain_id` | Domain ID to use for subdomain-based instances |
-| `pangolin.default_domain` | Base domain used to build public URLs in the CLI output |
-| `pangolin.subdomain_suffix` | Optional suffix appended to subdomains (e.g. `apps` for `*.apps.example.com`) |
-| `pangolin.site_id` | Site ID for Pangolin resource creation |
+| `pangolin.org_id` | Organization ID in Pangolin (text ID, e.g. `yacine`) |
+| `pangolin.default_domain_id` | Domain ID to use for subdomain-based instances (e.g. `domain1`) |
+| `pangolin.default_domain` | **Base domain** used to build public URLs. This is the root domain (e.g. `yacinesahli.com`), **not** including any subdomain suffix |
+| `pangolin.subdomain_suffix` | Optional suffix appended to subdomains. If your resources live at `*.apps.example.com`, set this to `apps` and `default_domain` to `example.com` |
+| `pangolin.site_id` | Site ID for Pangolin resource creation (the site connected to your VPS) |
 | `defaults.auto_backups_enabled` | Enable automatic daily backups |
 | `defaults.auto_backups_cron` | Cron schedule for automatic backups |
 | `defaults.auto_backups_max_keep` | Maximum number of automatic backups to retain |
@@ -347,9 +347,31 @@ server:
   integration_port: 3003  # default port; change if needed
 ```
 
-Then expose the integration API through your reverse proxy. For example, with Traefik, add a router pointing to `http://pangolin:3003` on a subdomain like `api.apps.yacinesahli.com`. The API base URL will be `https://api.apps.yacinesahli.com/v1`.
+#### Exposing the API
 
-You can verify the integration API is running by visiting `https://<your-api-url>/v1/` — it should return `{"message":"Healthy"}`. The full OpenAPI spec is available at `/v1/docs/`.
+You have two options for making the Integration API accessible:
+
+**Option A — Local access (recommended for same-host setup)**
+
+If PocketManager and Pangolin run on the same host, expose the integration port on localhost only. Add a port mapping to the `pangolin` service in your `docker-compose.yml`:
+
+```yaml
+pangolin:
+  container_name: pangolin
+  ports:
+    - "127.0.0.1:3003:3003"  # Integration API (localhost only)
+  # ... rest of config
+```
+
+Then use `http://localhost:3003/v1` as your `pangolin.api_url`.
+
+> **Note:** If you don't expose the port, you can also use the container's internal Docker IP directly (e.g. `http://172.19.0.4:3003/v1`). You can find it with `docker inspect pangolin --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'`. Be aware that the container IP may change when the container is recreated.
+
+**Option B — Public access via reverse proxy**
+
+Expose the integration API through your reverse proxy. For example, with Traefik, add a router pointing to `http://pangolin:3003` on a subdomain like `api.apps.yacinesahli.com`. The API base URL will be `https://api.apps.yacinesahli.com/v1`.
+
+You can verify the integration API is running by visiting `http://<your-api-url>/v1/` — it should return `{"message":"Healthy"}`. The full OpenAPI spec is available at `/v1/openapi.json`.
 
 ### Creating a Pangolin API Key
 
@@ -372,27 +394,49 @@ You will also need three IDs from your Pangolin dashboard:
 
 ### Subdomain Suffix
 
-If your Pangolin domain uses a subdomain pattern (e.g. resources are at `*.apps.yacinesahli.com` instead of `*.yacinesahli.com`), set the `subdomain_suffix` config. PocketManager will automatically append it when creating resources:
+If your Pangolin domain uses a subdomain pattern (e.g. resources are at `*.apps.example.com` instead of `*.example.com`), set the `subdomain_suffix` config. This works together with `default_domain`:
+
+| Config | Value | Purpose |
+|--------|-------|---------|
+| `default_domain` | `example.com` | The root domain in Pangolin |
+| `subdomain_suffix` | `apps` | Appended to subdomains when creating resources |
 
 ```bash
+pm config set pangolin.default_domain example.com
 pm config set pangolin.subdomain_suffix apps
 ```
 
-With this setting, `pm create myapp -s myapp` will create the resource at `myapp.apps.yacinesahli.com` instead of `myapp.yacinesahli.com`.
+With these settings, `pm create myapp -s myapp` will:
+1. Create the Pangolin resource with subdomain `myapp.apps`
+2. Display the URL as `https://myapp.apps.example.com`
+
+If your resources are at `*.example.com` directly (no suffix), leave `subdomain_suffix` empty and set `default_domain` to `example.com`.
 
 ### Configuration
 
 Set all values in PocketManager:
 
 ```bash
-pm config set pangolin.api_url https://api.apps.yacinesahli.com/v1   # Integration API URL
+# Integration API — use localhost for same-host (recommended) or public URL
+pm config set pangolin.api_url http://localhost:3003/v1
 pm config set pangolin.api_key YOUR_API_KEY
-pm config set pangolin.org_id YOUR_ORG_ID
-pm config set pangolin.default_domain_id YOUR_DOMAIN_ID
-pm config set pangolin.site_id YOUR_SITE_ID
-pm config set pangolin.default_domain yacinesahli.com
-pm config set pangolin.subdomain_suffix apps   # optional, see above
+pm config set pangolin.org_id YOUR_ORG_ID             # text ID from Pangolin (e.g. "yacine")
+pm config set pangolin.default_domain_id YOUR_DOMAIN_ID # domain ID from Pangolin (e.g. "domain1")
+pm config set pangolin.site_id YOUR_SITE_ID             # numeric site ID (e.g. "1")
+pm config set pangolin.default_domain example.com        # base domain (root, no subdomain prefix)
+pm config set pangolin.subdomain_suffix apps             # optional: if resources are at *.apps.example.com
+pm config set pangolin.target_ip 172.19.0.1              # Docker bridge gateway IP (or 127.0.0.1)
 ```
+
+> **Finding your IDs:** The `org_id` is a text identifier visible in your Pangolin dashboard URL. The `default_domain_id` and `site_id` can be found on the Organization → Domains and Sites pages respectively. You can also query the Integration API:
+>
+> ```bash
+> # List domains for your org (replace YOUR_ORG_ID and YOUR_API_KEY)
+> curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:3003/v1/org/YOUR_ORG_ID/domains
+>
+> # List sites for your org
+> curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:3003/v1/org/YOUR_ORG_ID/sites
+> ```
 
 ### How It Works
 
