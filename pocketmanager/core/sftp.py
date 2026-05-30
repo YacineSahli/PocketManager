@@ -282,18 +282,21 @@ def upload_instance_backup(
     """Download a backup from PocketBase and upload it to SFTP.
 
     Convenience function that:
-    1. Downloads the backup from PocketBase to the instance directory
+    1. Downloads the backup from PocketBase to a temporary file
     2. Uploads the local file to SFTP
-    3. Deletes the local downloaded copy
+    3. Deletes the temporary file
 
     Returns ``(True, remote_file_path)`` on success or
     ``(False, error_message)`` on failure.
     """
+    import tempfile
+
     from pocketmanager.core.backup import download_backup
     from pocketmanager.core.state import get_instance
 
-    # Build local download path
-    local_path = f"{instance_dir}/{backup_key}"
+    # Download to a temp file (instance_dir may not be writable)
+    tmp_dir = tempfile.gettempdir()
+    local_path = os.path.join(tmp_dir, f"pm_sftp_{instance_name}_{backup_key}")
 
     # Download from PocketBase
     instance = get_instance(instance_name)
