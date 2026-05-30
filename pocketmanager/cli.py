@@ -292,12 +292,20 @@ def list_instances_cmd() -> None:
         url = _build_url(inst)
         dashboard_url = f"{url}/_/" if url != "(unknown)" else "—"
 
-        # Local backup status
-        auto_backup = inst.get("auto_backup", False)
-        if auto_backup:
+        # Local backup status — query PocketBase's actual cron setting
+        local_label = "[dim]off[/dim]"
+        if inst.get("active", False):
+            try:
+                from pocketmanager.core.backup import get_backup_cron_status
+                cron_status = get_backup_cron_status(f"http://127.0.0.1:{inst.get('port', 8090)}")
+                if cron_status["enabled"]:
+                    local_label = "[bold green]on[/bold green]"
+            except Exception:
+                # Fallback to PM flag if PB is unreachable
+                if inst.get("auto_backup", False):
+                    local_label = "[bold green]on[/bold green]"
+        elif inst.get("auto_backup", False):
             local_label = "[bold green]on[/bold green]"
-        else:
-            local_label = "[dim]off[/dim]"
 
         # SFTP backup status (global)
         if sftp_active:
@@ -1332,12 +1340,19 @@ def local_backup_schedule(
     ])
 
     if not has_any_option:
-        # Show current status
-        auto_backup = instance.get("auto_backup", False)
-        schedule = instance.get("backup_cron", "")
-        keep = instance.get("backup_max_keep", "")
+        # Show current status — query PocketBase's actual settings
+        try:
+            from pocketmanager.core.backup import get_backup_cron_status
+            cron_status = get_backup_cron_status(f"http://localhost:{port}")
+            status = "[bold green]enabled[/bold green]" if cron_status["enabled"] else "[dim]disabled[/dim]"
+            schedule = cron_status["cron"]
+            keep = cron_status["max_keep"]
+        except Exception:
+            # Fallback to PM-side flags
+            status = "[bold green]enabled[/bold green]" if instance.get("auto_backup", False) else "[dim]disabled[/dim]"
+            schedule = instance.get("backup_cron", "")
+            keep = instance.get("backup_max_keep", "")
 
-        status = "[bold green]enabled[/bold green]" if auto_backup else "[dim]disabled[/dim]"
         panel_lines = f"[bold]Status:[/bold]    {status}\n"
         panel_lines += f"[bold]Schedule:[/bold]  {schedule or '(not set)'}\n"
         panel_lines += f"[bold]Max keep:[/bold]  {keep or '(default)'}"
