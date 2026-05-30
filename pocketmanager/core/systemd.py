@@ -213,6 +213,117 @@ def create_service(
     return service_path
 
 
+def modify_service(
+    name: str,
+    port: int | None = None,
+    env_set: dict[str, str] | None = None,
+    env_unset: list[str] | None = None,
+) -> Path:
+    """Modify an existing systemd service file for *name*.
+
+    Reads the current service file to extract the working directory, then
+    regenerates it with the requested changes.  This ensures the security
+    hardening and template stay consistent with freshly-created services.
+
+    Parameters
+    ----------
+    name:
+        Instance name.
+    port:
+        New HTTP port.  ``None`` keeps the current value.
+    env_set:
+        Environment variables to add or update (``{KEY: VALUE}``).
+    env_unset:
+        Environment variable keys to remove.
+
+    Returns
+    -------
+    Path
+        The path where the service file was written.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the service file does not exist.
+    ValueError
+        If the service file cannot be parsed.
+    subprocess.CalledProcessError
+        If ``tee`` or ``daemon-reload`` fails.
+    """
+    service_path = get_service_path(name)
+    if not service_path.is_file():
+        raise FileNotFoundError(f"Service file not found: {service_path}")
+
+    # --- Read current values from the service file ---
+    content = service_path.read_text(encoding="utf-8")
+
+    # Extract current WorkingDirectory
+    current_working_dir: str | None = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("WorkingDirectory="):
+            current_working_dir = stripped.split("=", 1)[1].strip()
+            break
+    if not current_working_dir:
+        raise ValueError("Could not find WorkingDirectory in service file")
+
+    # Extract current port from ExecStart
+    current_port: int | None = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ExecStart=") and "--http=" in stripped:
+            port_part = stripped.rsplit(":", 1)[-1].strip()
+            try:
+                current_port = int(port_part)
+            except ValueError:
+                pass
+            break
+    if current_port is None:
+        raise ValueError("Could not parse current port from ExecStart")
+
+    # Extract current environment variables
+    current_env: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('Environment="') and stripped.endswith('"'):
+            inner = stripped[len('Environment="'):-1]
+            if "=" in inner:
+                k, _, v = inner.partition("=")
+                current_env[k] = v
+
+    # --- Apply changes ---
+    effective_port = port if port is not None else current_port
+
+    # Merge environment: apply removals first, then additions
+    effective_env = dict(current_env)
+    if env_unset:
+        for key in env_unset:
+            effective_env.pop(key, None)
+    if env_set:
+        effective_env.update(env_set)
+
+    # --- Regenerate and write ---
+    new_content = generate_service_content(
+        name=name,
+        port=effective_port,
+        working_dir=current_working_dir,
+        env=effective_env if effective_env else None,
+    )
+
+    subprocess.run(
+        ["sudo", "tee", str(service_path)],
+        input=new_content.encode("utf-8"),
+        check=True,
+    )
+
+    subprocess.run(
+        ["sudo", "systemctl", "daemon-reload"],
+        check=True,
+    )
+
+    return service_path
+
+
 def remove_service(name: str) -> bool:
     """Stop, disable, and remove the systemd service for *name*.
 
