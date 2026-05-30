@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -736,7 +737,9 @@ def healthcheck_cmd() -> None:
 @click.argument("name", type=INSTANCE_NAME)
 @click.option("--download", is_flag=True, default=False, help="Download the backup after creation.")
 @click.option("--name", "backup_name", default=None, help="Custom backup name.")
-def backup(name: str, download: bool, backup_name: str | None) -> None:
+@click.option("--push", "push_remote", is_flag=True, default=False,
+              help="Upload the backup to SFTP after creation.")
+def backup(name: str, download: bool, backup_name: str | None, push_remote: bool) -> None:
     """Create a backup of a PocketBase instance."""
     from pocketmanager.core import backup as backup_mod
     from pocketmanager.core.state import get_instance
@@ -801,6 +804,9 @@ def backup(name: str, download: bool, backup_name: str | None) -> None:
             console.print(f"[bold red]Error: Failed to download backup.[/bold red]")
             sys.exit(1)
 
+    if push_remote:
+        _push_latest_backup(name, instance, instance_url, token, backup_name)
+
 
 # ---------------------------------------------------------------------------
 # backups (list)
@@ -809,7 +815,9 @@ def backup(name: str, download: bool, backup_name: str | None) -> None:
 
 @cli.command()
 @click.argument("name", type=INSTANCE_NAME)
-def backups(name: str) -> None:
+@click.option("--remote", is_flag=True, default=False,
+              help="List backups stored on the remote SFTP server instead of locally.")
+def backups(name: str, remote: bool) -> None:
     """List backups for a PocketBase instance."""
     from pocketmanager.core import backup as backup_mod
     from pocketmanager.core.state import get_instance
@@ -823,6 +831,10 @@ def backups(name: str) -> None:
     if not port:
         console.print(f"[bold red]Error: No port configured for instance '{name}'.[/bold red]")
         sys.exit(1)
+
+    if remote:
+        _list_remote_backups(name)
+        return
 
     instance_url = f"http://localhost:{port}"
     token = _require_backup_auth(name, instance)
@@ -897,6 +909,376 @@ def restore(name: str, backup_key: str) -> None:
 
     console.print(f"[bold green]Backup '{backup_key}' restored successfully for '{name}'.[/bold green]")
     console.print("[bold yellow]The instance will restart automatically.[/bold yellow]")
+
+
+# ---------------------------------------------------------------------------
+# SFTP helpers
+# ---------------------------------------------------------------------------
+
+
+def _require_sftp_config() -> dict[str, Any] | None:
+    """Load SFTP config and verify it is enabled.
+
+    Returns the config dict on success, or ``None`` (after printing an
+    error message).
+    """
+    from pocketmanager.core.config import get
+
+    sftp_config: dict[str, Any] = {
+        "enabled": get("sftp.enabled", False),
+        "host": get("sftp.host", ""),
+        "port": get("sftp.port", 22),
+        "username": get("sftp.username", ""),
+        "password": get("sftp.password", ""),
+        "private_key_path": get("sftp.private_key_path", ""),
+        "remote_path": get("sftp.remote_path", "/backups"),
+        "max_remote_backups": get("sftp.max_remote_backups", 30),
+    }
+
+    if not sftp_config.get("enabled"):
+        console.print(
+            "[bold red]Error: SFTP off-site backup is not configured.[/bold red]\n"
+            "[dim]Run 'pm sftp-config' to set up remote storage.[/dim]"
+        )
+        return None
+
+    if not sftp_config.get("host"):
+        console.print(
+            "[bold red]Error: SFTP host is not configured.[/bold red]\n"
+            "[dim]Run 'pm sftp-config' to set the host.[/dim]"
+        )
+        return None
+
+    return sftp_config
+
+
+def _push_latest_backup(
+    name: str,
+    instance: dict[str, Any],
+    instance_url: str,
+    token: str,
+    backup_name: str | None,
+) -> None:
+    """Upload the most recent backup to SFTP."""
+    from pocketmanager.core import backup as backup_mod
+    from pocketmanager.core.sftp import (
+        cleanup_remote_backups,
+        upload_instance_backup,
+    )
+
+    sftp_config = _require_sftp_config()
+    if sftp_config is None:
+        sys.exit(1)
+
+    # Find the backup we just created
+    all_backups = backup_mod.list_backups(instance_url, auth_token=token)
+    if not all_backups:
+        console.print("[bold yellow]Warning: Could not list backups for SFTP upload.[/bold yellow]")
+        return
+
+    target = None
+    if backup_name:
+        for b in all_backups:
+            if b.get("key", "").startswith(backup_name):
+                target = b
+                break
+    if not target:
+        all_backups.sort(key=lambda b: b.get("modified", ""), reverse=True)
+        target = all_backups[0]
+
+    backup_key = target.get("key", "")
+    if not backup_key:
+        console.print("[bold yellow]Warning: Could not identify backup key for SFTP upload.[/bold yellow]")
+        return
+
+    instance_dir = instance.get("instance_dir", "")
+    console.print(f"[bold]Uploading backup to SFTP server...[/bold]")
+
+    ok, result = upload_instance_backup(
+        backup_key, name, instance_dir, sftp_config, auth_token=token,
+    )
+    if ok:
+        console.print(f"[bold green]Backup uploaded to: {result}[/bold green]")
+        # Prune old remote backups
+        max_keep = sftp_config.get("max_remote_backups", 30)
+        deleted_count, deleted_files = cleanup_remote_backups(
+            name, sftp_config, max_keep=max_keep,
+        )
+        if deleted_count > 0:
+            console.print(
+                f"[dim]Pruned {deleted_count} old remote backup(s): "
+                + ", ".join(deleted_files)
+                + "[/dim]"
+            )
+    else:
+        console.print(f"[bold red]Error: SFTP upload failed: {result}[/bold red]")
+        sys.exit(1)
+
+
+def _list_remote_backups(name: str) -> None:
+    """List backups stored on the remote SFTP server."""
+    from datetime import datetime
+
+    from pocketmanager.core.sftp import list_remote_backups as sftp_list
+
+    sftp_config = _require_sftp_config()
+    if sftp_config is None:
+        sys.exit(1)
+
+    console.print(f"[bold]Listing remote backups for '{name}'...[/bold]")
+    ok, result = sftp_list(name, sftp_config)
+
+    if not ok:
+        console.print(f"[bold red]Error: {result}[/bold red]")
+        sys.exit(1)
+
+    entries: list[dict[str, Any]] = result  # type: ignore[assignment]
+    if not entries:
+        console.print(f"[dim]No remote backups found for '{name}'.[/dim]")
+        return
+
+    table = Table(title=f"Remote Backups for {name}")
+    table.add_column("Filename", style="cyan", no_wrap=True)
+    table.add_column("Modified", style="dim")
+    table.add_column("Size", justify="right")
+
+    for entry in entries:
+        filename = entry.get("filename", "")
+        mtime = entry.get("last_modified", 0)
+        size = entry.get("size", 0)
+        # Format timestamp
+        if isinstance(mtime, (int, float)) and mtime > 0:
+            modified = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            modified = str(mtime)
+        # Format size
+        if isinstance(size, (int, float)):
+            size_str = f"{size / (1024 * 1024):.1f} MB"
+        else:
+            size_str = str(size)
+        table.add_row(filename, modified, size_str)
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# sftp-config
+# ---------------------------------------------------------------------------
+
+
+@cli.command("sftp-config")
+@click.option("--host", "sftp_host", default=None, help="SFTP server hostname.")
+@click.option("--port", "sftp_port", default=None, type=int, help="SFTP port (default: 22).")
+@click.option("--username", "sftp_user", default=None, help="SFTP username.")
+@click.option("--password", "sftp_pass", default=None, help="SFTP password (use --no-password for key-only auth).")
+@click.option("--no-password", is_flag=True, default=False,
+              help="Clear stored password (use key-based auth).")
+@click.option("--private-key", "sftp_key", default=None,
+              help="Path to SSH private key file.")
+@click.option("--remote-path", "sftp_remote_path", default=None,
+              help="Remote directory for backups (default: /backups).")
+@click.option("--max-remote-backups", "sftp_max", default=None, type=int,
+              help="Maximum remote backups to keep per instance (default: 30).")
+@click.option("--enable/--disable", default=None,
+              help="Enable or disable SFTP off-site backups.")
+@click.option("--test", "test_only", is_flag=True, default=False,
+              help="Test the connection without saving.")
+def sftp_config(
+    sftp_host: str | None,
+    sftp_port: int | None,
+    sftp_user: str | None,
+    sftp_pass: str | None,
+    no_password: bool,
+    sftp_key: str | None,
+    sftp_remote_path: str | None,
+    sftp_max: int | None,
+    enable: bool | None,
+    test_only: bool,
+) -> None:
+    """Configure or test SFTP off-site backup storage.
+
+    Configure connection details for a remote SFTP server (e.g. Hetzner
+    Storagebox).  All settings are optional — only provided options are
+    updated.
+
+    \b
+    Examples:
+      pm sftp-config --host u123456.your-storagebox.de --port 23 --username u123456-sub1
+      pm sftp-config --password
+      pm sftp-config --enable
+      pm sftp-config --test
+    """
+    from pocketmanager.core.config import get, load_config, save_config
+
+    config = load_config()
+    sftp = config.setdefault("sftp", {})
+
+    # If no options given at all, show current config and prompt
+    has_any_option = any([
+        sftp_host, sftp_port is not None, sftp_user, sftp_pass,
+        no_password, sftp_key, sftp_remote_path, sftp_max is not None,
+        enable is not None, test_only,
+    ])
+
+    if not has_any_option:
+        # Interactive mode — show current and prompt
+        current_host = sftp.get("host", "")
+        current_port = sftp.get("port", 22)
+        current_user = sftp.get("username", "")
+        current_path = sftp.get("remote_path", "/backups")
+        current_max = sftp.get("max_remote_backups", 30)
+        current_enabled = sftp.get("enabled", False)
+
+        console.print(Panel(
+            f"[bold]Host:[/bold]     {current_host or '(not set)'}\n"
+            f"[bold]Port:[/bold]     {current_port}\n"
+            f"[bold]Username:[/bold] {current_user or '(not set)'}\n"
+            f"[bold]Path:[/bold]     {current_path}\n"
+            f"[bold]Max keep:[/bold] {current_max}\n"
+            f"[bold]Enabled:[/bold]  {'yes' if current_enabled else 'no'}",
+            title="Current SFTP Configuration",
+            border_style="cyan",
+        ))
+        return
+
+    # Apply individual settings
+    if sftp_host is not None:
+        sftp["host"] = sftp_host
+    if sftp_port is not None:
+        sftp["port"] = sftp_port
+    if sftp_user is not None:
+        sftp["username"] = sftp_user
+    if sftp_pass is not None:
+        sftp["password"] = sftp_pass
+    if no_password:
+        sftp["password"] = ""
+    if sftp_key is not None:
+        sftp["private_key_path"] = sftp_key
+    if sftp_remote_path is not None:
+        sftp["remote_path"] = sftp_remote_path
+    if sftp_max is not None:
+        sftp["max_remote_backups"] = sftp_max
+    if enable is not None:
+        sftp["enabled"] = enable
+
+    # Build the effective config for testing / display
+    effective = {
+        "enabled": sftp.get("enabled", False),
+        "host": sftp.get("host", ""),
+        "port": sftp.get("port", 22),
+        "username": sftp.get("username", ""),
+        "password": sftp.get("password", ""),
+        "private_key_path": sftp.get("private_key_path", ""),
+        "remote_path": sftp.get("remote_path", "/backups"),
+        "max_remote_backups": sftp.get("max_remote_backups", 30),
+    }
+
+    if test_only:
+        if not effective.get("host"):
+            console.print("[bold red]Error: No SFTP host configured.[/bold red]")
+            sys.exit(1)
+
+        console.print(f"[bold]Testing connection to {effective['host']}:{effective['port']}...[/bold]")
+        from pocketmanager.core.sftp import test_connection
+
+        ok, msg = test_connection(effective)
+        if ok:
+            console.print(f"[bold green]Connection successful! Remote path: {msg}[/bold green]")
+        else:
+            console.print(f"[bold red]Connection failed: {msg}[/bold red]")
+            sys.exit(1)
+        return
+
+    # Save
+    config["sftp"] = sftp
+    save_config(config)
+    console.print("[bold green]SFTP configuration saved.[/bold green]")
+
+    # Optionally test
+    if effective.get("host"):
+        if click.confirm("Test connection now?", default=True):
+            from pocketmanager.core.sftp import test_connection
+
+            ok, msg = test_connection(effective)
+            if ok:
+                console.print(f"[bold green]Connection successful! Remote path: {msg}[/bold green]")
+            else:
+                console.print(f"[bold yellow]Connection failed: {msg}[/bold yellow]")
+                console.print("[dim]Configuration was saved. Fix connection issues and re-run with --test.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# push-backup
+# ---------------------------------------------------------------------------
+
+
+@cli.command("push-backup")
+@click.argument("name", type=INSTANCE_NAME)
+@click.argument("backup_key", required=False, default=None)
+def push_backup(name: str, backup_key: str | None) -> None:
+    """Upload a backup to the remote SFTP server.
+
+    If BACKUP_KEY is omitted, the most recent backup is uploaded.
+
+    \b
+    Examples:
+      pm push-backup myapp
+      pm push-backup myapp pb_backup_acme_20260530143000.zip
+    """
+    from pocketmanager.core import backup as backup_mod
+    from pocketmanager.core.sftp import cleanup_remote_backups, upload_instance_backup
+    from pocketmanager.core.state import get_instance
+
+    sftp_config = _require_sftp_config()
+    if sftp_config is None:
+        sys.exit(1)
+
+    instance = get_instance(name)
+    if instance is None:
+        console.print(f"[bold red]Error: Instance '{name}' not found.[/bold red]")
+        sys.exit(1)
+    instance_dir = instance.get("instance_dir", "")
+    port = instance.get("port")
+
+    token = _require_backup_auth(name, instance)
+    if token is None:
+        sys.exit(1)
+
+    instance_url = f"http://localhost:{port}"
+
+    # Resolve backup key
+    if not backup_key:
+        all_backups = backup_mod.list_backups(instance_url, auth_token=token)
+        if not all_backups:
+            console.print(f"[bold red]Error: No backups found for '{name}'.[/bold red]")
+            sys.exit(1)
+        all_backups.sort(key=lambda b: b.get("modified", ""), reverse=True)
+        backup_key = all_backups[0].get("key", "")
+
+    if not backup_key:
+        console.print("[bold red]Error: Could not determine backup key.[/bold red]")
+        sys.exit(1)
+
+    console.print(f"[bold]Uploading '{backup_key}' for '{name}' to SFTP...[/bold]")
+    ok, result = upload_instance_backup(
+        backup_key, name, instance_dir, sftp_config, auth_token=token,
+    )
+    if ok:
+        console.print(f"[bold green]Backup uploaded to: {result}[/bold green]")
+        # Prune old remote backups
+        max_keep = sftp_config.get("max_remote_backups", 30)
+        deleted_count, deleted_files = cleanup_remote_backups(
+            name, sftp_config, max_keep=max_keep,
+        )
+        if deleted_count > 0:
+            console.print(
+                f"[dim]Pruned {deleted_count} old remote backup(s): "
+                + ", ".join(deleted_files)
+                + "[/dim]"
+            )
+    else:
+        console.print(f"[bold red]Error: SFTP upload failed: {result}[/bold red]")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

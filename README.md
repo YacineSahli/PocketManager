@@ -614,6 +614,130 @@ pm restore myapp pb_backup_acme_20260530143000.zip
 - **Test restore on a staging instance** before relying on it in production
 - **Use a dedicated backup superadmin** to isolate credentials from personal accounts
 
+### Off-Site Backups via SFTP
+
+PocketManager can automatically push backup archives to a remote SFTP server (e.g. [Hetzner Storagebox](https://www.hetzner.com/storage/storage-box)). This protects against data loss if the VPS disk fails or is accidentally deleted.
+
+#### Setup
+
+1. **Configure the SFTP connection:**
+
+```bash
+pm sftp-config \
+  --host u123456.your-storagebox.de \
+  --port 23 \
+  --username u123456-sub1
+```
+
+2. **Set the password (you'll be prompted securely):**
+
+```bash
+pm sftp-config --password
+```
+
+   Alternatively, use SSH key-based auth:
+
+```bash
+pm sftp-config --private-key ~/.ssh/id_storagebox
+```
+
+3. **Test the connection:**
+
+```bash
+pm sftp-config --test
+```
+
+4. **Enable off-site backups:**
+
+```bash
+pm sftp-config --enable
+```
+
+5. **Review the current configuration:**
+
+```bash
+pm sftp-config
+```
+
+#### Remote File Layout
+
+Backups are organized in per-instance folders on the remote server:
+
+```
+/backups/
+  myapp/
+    pb_backup_acme_20260530143000.zip
+    pb_backup_acme_20260531030000.zip
+  otherapp/
+    pb_backup_acme_20260530150000.zip
+```
+
+#### Uploading Backups
+
+**Upload the latest backup after creation:**
+
+```bash
+pm backup myapp --push
+```
+
+**Upload a specific backup:**
+
+```bash
+pm push-backup myapp pb_backup_acme_20260530143000.zip
+```
+
+**Upload the most recent backup (no key needed):**
+
+```bash
+pm push-backup myapp
+```
+
+#### Listing Remote Backups
+
+```bash
+pm backups myapp --remote
+```
+
+This displays a table of backup files stored on the SFTP server with filename, modified date, and size.
+
+#### Automatic Pruning
+
+When `max_remote_backups` is set (default: 30), PocketManager automatically deletes the oldest remote backups when new ones are uploaded. Configure the limit:
+
+```bash
+pm sftp-config --max-remote-backups 14
+```
+
+#### Full Configuration Reference
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | _(empty)_ | SFTP server hostname |
+| `--port` | `22` | SFTP port |
+| `--username` | _(empty)_ | SFTP username |
+| `--password` | _(empty)_ | SFTP password |
+| `--private-key` | _(empty)_ | Path to SSH private key |
+| `--remote-path` | `/backups` | Remote directory root |
+| `--max-remote-backups` | `30` | Max backups per instance |
+| `--enable / --disable` | `disabled` | Enable or disable SFTP |
+
+All settings can also be configured directly in `config.json`:
+
+```json
+{
+  "sftp": {
+    "enabled": true,
+    "host": "u123456.your-storagebox.de",
+    "port": 23,
+    "username": "u123456-sub1",
+    "password": "your-password",
+    "private_key_path": "",
+    "remote_path": "/backups",
+    "max_remote_backups": 30
+  }
+}
+```
+
 ---
 
 ## Security
@@ -663,6 +787,7 @@ pocketmanager/
     instance.py           # Main instance orchestrator
     pangolin.py           # Pangolin API client
     backup.py             # Backup API wrapper
+    sftp.py              # SFTP off-site backup storage
     health.py             # Health checking
     selfupdate.py         # Self-update mechanism
   dashboard/
@@ -680,6 +805,7 @@ pocketmanager/
 - **core/systemd.py** -- Generates, installs, enables, and manages systemd service units.
 - **core/pangolin.py** -- HTTP client for the Pangolin API (create/delete proxy resources, manage authentication).
 - **core/backup.py** -- Wraps the PocketBase backup REST endpoints.
+- **core/sftp.py** -- SFTP client for off-site backup storage (upload, list, delete, prune). Supports password and key-based auth.
 - **core/health.py** -- Sends HTTP health probes to all instances and reports results.
 - **core/selfupdate.py** -- Checks GitHub Releases and applies updates via git.
 - **dashboard/** -- Flask-based web dashboard with a single-page frontend, REST API, and optional password auth.

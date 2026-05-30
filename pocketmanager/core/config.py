@@ -51,6 +51,16 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "auto_backups_cron": "0 3 * * *",
         "auto_backups_max_keep": 7,
     },
+    "sftp": {
+        "enabled": False,
+        "host": "",
+        "port": 22,
+        "username": "",
+        "password": "",
+        "private_key_path": "",
+        "remote_path": "/backups",
+        "max_remote_backups": 30,
+    },
 }
 
 # ---------------------------------------------------------------------------

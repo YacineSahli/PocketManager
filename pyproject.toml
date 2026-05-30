@@ -31,6 +31,7 @@ dependencies = [
     "requests>=2.31",
     "rich>=13.0",
     "flask>=3.0",
+    "paramiko>=3.4",
 ]
 
 [project.scripts]
