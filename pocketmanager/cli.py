@@ -287,6 +287,7 @@ def create(
 def list_instances_cmd() -> None:
     """List all PocketBase instances."""
     from pocketmanager.core import instance as instance_mod
+    from pocketmanager.core.cron import get_sftp_cron
 
     instances = instance_mod.list_instances()
 
@@ -294,21 +295,43 @@ def list_instances_cmd() -> None:
         console.print("[dim]No instances found.[/dim]")
         return
 
+    # Check SFTP backup cron status (shared across all instances)
+    sftp_cron = get_sftp_cron()
+    sftp_active = sftp_cron["active"]
+
     table = Table(title="PocketBase Instances")
     table.add_column("Name", style="cyan", no_wrap=True)
     table.add_column("Port", justify="right", style="magenta")
     table.add_column("Status", justify="center")
     table.add_column("Version", style="dim")
+    table.add_column("Local Backup", justify="center")
+    table.add_column("SFTP Backup", justify="center")
     table.add_column("Dashboard URL", style="green")
 
     for inst in instances:
         active = inst.get("active", False)
         dashboard_url = f"{_build_url(inst)}/_/" if inst.get("pangolin_resource_id") else "—"
+
+        # Local backup status
+        auto_backup = inst.get("auto_backup", False)
+        if auto_backup:
+            local_label = "[bold green]on[/bold green]"
+        else:
+            local_label = "[dim]off[/dim]"
+
+        # SFTP backup status (global)
+        if sftp_active:
+            sftp_label = "[bold green]on[/bold green]"
+        else:
+            sftp_label = "[dim]off[/dim]"
+
         table.add_row(
             inst.get("name", ""),
             str(inst.get("port", "")),
             _status_style(active),
             inst.get("version", ""),
+            local_label,
+            sftp_label,
             dashboard_url,
         )
 
@@ -1278,6 +1301,207 @@ def push_backup(name: str, backup_key: str | None) -> None:
             )
     else:
         console.print(f"[bold red]Error: SFTP upload failed: {result}[/bold red]")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# local-backup-schedule
+# ---------------------------------------------------------------------------
+
+
+@cli.command("local-backup-schedule")
+@click.argument("name", type=INSTANCE_NAME)
+@click.option("--enable/--disable", default=None,
+              help="Enable or disable automatic local backups.")
+@click.option("--schedule", "cron_expr", default=None,
+              help="Cron expression (e.g. '0 3 * * *').")
+@click.option("--max-keep", type=int, default=None,
+              help="Maximum number of local backups to keep.")
+def local_backup_schedule(
+    name: str,
+    enable: bool | None,
+    cron_expr: str | None,
+    max_keep: int | None,
+) -> None:
+    """Configure automatic local backups for an instance.
+
+    Local backups are managed by PocketBase's built-in scheduler.
+    They are stored inside the instance's pb_data/backups/ directory.
+
+    \b
+    Examples:
+      pm local-backup-schedule myapp --enable --schedule '0 3 * * *' --max-keep 7
+      pm local-backup-schedule myapp --disable
+      pm local-backup-schedule myapp
+    """
+    from pocketmanager.core import backup as backup_mod
+    from pocketmanager.core.state import get_instance, update_instance
+
+    instance = get_instance(name)
+    if instance is None:
+        console.print(f"[bold red]Error: Instance '{name}' not found.[/bold red]")
+        sys.exit(1)
+
+    port = instance.get("port")
+    if not port:
+        console.print(f"[bold red]Error: No port configured for instance '{name}'.[/bold red]")
+        sys.exit(1)
+
+    has_any_option = any([
+        enable is not None, cron_expr is not None, max_keep is not None,
+    ])
+
+    if not has_any_option:
+        # Show current status
+        auto_backup = instance.get("auto_backup", False)
+        schedule = instance.get("backup_cron", "")
+        keep = instance.get("backup_max_keep", "")
+
+        status = "[bold green]enabled[/bold green]" if auto_backup else "[dim]disabled[/dim]"
+        panel_lines = f"[bold]Status:[/bold]    {status}\n"
+        panel_lines += f"[bold]Schedule:[/bold]  {schedule or '(not set)'}\n"
+        panel_lines += f"[bold]Max keep:[/bold]  {keep or '(default)'}"
+        console.print(Panel(panel_lines, title=f"Local Backup Schedule: {name}", border_style="cyan"))
+        return
+
+    # Apply changes
+    token = _require_backup_auth(name, instance)
+    if token is None:
+        sys.exit(1)
+
+    instance_url = f"http://localhost:{port}"
+
+    # Determine effective values
+    effective_enabled = enable if enable is not None else instance.get("auto_backup", False)
+    effective_cron = cron_expr or instance.get("backup_cron", "0 3 * * *")
+    effective_max = max_keep or instance.get("backup_max_keep", 7)
+
+    if effective_enabled:
+        # Configure PocketBase's internal backup scheduler
+        ok = backup_mod.configure_auto_backup(
+            instance_url, effective_cron, effective_max, auth_token=token,
+        )
+        if not ok:
+            console.print("[bold red]Error: Failed to configure PocketBase backup schedule.[/bold red]")
+            sys.exit(1)
+        console.print(
+            f"[bold green]Local backup schedule enabled for '{name}'.[/bold green]\n"
+            f"  Schedule: {effective_cron}\n"
+            f"  Max keep: {effective_max}"
+        )
+    else:
+        # Disable by setting cron to empty
+        ok = backup_mod.configure_auto_backup(
+            instance_url, "", 0, auth_token=token,
+        )
+        if not ok:
+            console.print("[bold red]Error: Failed to disable PocketBase backup schedule.[/bold red]")
+            sys.exit(1)
+        console.print(f"[bold green]Local backup schedule disabled for '{name}'.[/bold green]")
+
+    # Persist to instance state
+    updates: dict[str, Any] = {
+        "auto_backup": effective_enabled,
+        "backup_cron": effective_cron if effective_enabled else "",
+        "backup_max_keep": effective_max if effective_enabled else 0,
+    }
+    update_instance(name, updates)
+
+
+# ---------------------------------------------------------------------------
+# sftp-backup-schedule
+# ---------------------------------------------------------------------------
+
+
+@cli.command("sftp-backup-schedule")
+@click.option("--enable/--disable", default=None,
+              help="Enable or disable the SFTP backup cron job.")
+@click.option("--schedule", "cron_expr", default=None,
+              help="Cron expression (e.g. '0 3 * * *').")
+def sftp_backup_schedule(
+    enable: bool | None,
+    cron_expr: str | None,
+) -> None:
+    """Configure automatic SFTP off-site backup via system cron.
+
+    When enabled, creates a system cron entry that runs
+    ``pm backup-all --push`` on the given schedule.
+
+    \b
+    Examples:
+      pm sftp-backup-schedule --enable --schedule '0 3 * * *'
+      pm sftp-backup-schedule --disable
+      pm sftp-backup-schedule
+    """
+    from pocketmanager.core.cron import get_sftp_cron, remove_sftp_cron, set_sftp_cron
+    from pocketmanager.core.config import get as cfg_get
+
+    has_any_option = any([enable is not None, cron_expr is not None])
+
+    if not has_any_option:
+        # Show current status
+        cron_info = get_sftp_cron()
+        sftp_enabled = cfg_get("sftp.enabled", False)
+        sftp_host = cfg_get("sftp.host", "")
+
+        status_parts = []
+        if sftp_enabled and sftp_host:
+            status_parts.append(f"[bold green]SFTP:[/bold green]     {sftp_host}")
+        else:
+            status_parts.append("[dim]SFTP:[/dim]      not configured")
+
+        if cron_info["active"]:
+            status_parts.append(f"[bold green]Cron:[/bold green]      enabled")
+            status_parts.append(f"[bold]Schedule:[/bold]  {cron_info['schedule']}")
+            status_parts.append(f"[dim]Command:[/dim]   {cron_info['command']}")
+        else:
+            status_parts.append("[dim]Cron:[/dim]      disabled")
+
+        console.print(Panel(
+            "\n".join(status_parts),
+            title="SFTP Backup Schedule",
+            border_style="cyan",
+        ))
+        return
+
+    if enable is False or (enable is None and not cron_expr):
+        # Disable
+        ok = remove_sftp_cron()
+        if ok:
+            console.print("[bold green]SFTP backup cron removed.[/bold green]")
+        else:
+            console.print("[bold red]Error: Failed to remove cron entry. Try with sudo.[/bold red]")
+            sys.exit(1)
+        return
+
+    # Enable / update
+    schedule = cron_expr or "0 3 * * *"
+
+    # Verify SFTP is configured
+    if not cfg_get("sftp.enabled", False):
+        console.print(
+            "[bold red]Error: SFTP is not configured.[/bold red]\n"
+            "[dim]Run 'pm sftp-config --enable' first.[/dim]"
+        )
+        sys.exit(1)
+
+    if not cfg_get("sftp.host", ""):
+        console.print(
+            "[bold red]Error: SFTP host is not configured.[/bold red]\n"
+            "[dim]Run 'pm sftp-config --host <hostname>' first.[/dim]"
+        )
+        sys.exit(1)
+
+    ok = set_sftp_cron(schedule)
+    if ok:
+        console.print(
+            f"[bold green]SFTP backup cron installed.[/bold green]\n"
+            f"  Schedule: {schedule}\n"
+            f"  Command:  pm backup-all --push\n"
+            f"  Log:      /var/log/pm-backup.log"
+        )
+    else:
+        console.print("[bold red]Error: Failed to install cron entry. Try with sudo.[/bold red]")
         sys.exit(1)
 
 

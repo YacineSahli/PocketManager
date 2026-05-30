@@ -738,31 +738,52 @@ All settings can also be configured directly in `config.json`:
 }
 ```
 
-#### Automated Off-Site Backups with Cron
+#### Local Backup Schedule
 
-Use `pm backup-all --push` to back up every instance and upload to SFTP in one command. Wire it into system cron for fully automated off-site backups:
-
-```bash
-# Edit crontab
-sudo crontab -e
-```
-
-Add a line like:
-
-```
-# Back up all instances and push to SFTP every day at 03:00
-0 3 * * * /usr/local/bin/pm backup-all --push >> /var/log/pm-backup.log 2>&1
-```
-
-> **Note:** Adjust the path to `pm` if installed differently (check with `which pm`). The log file will rotate naturally; consider adding logrotate for long-term use.
-
-You can also run it manually to test:
+PocketBase has a built-in backup scheduler. Use `pm local-backup-schedule` to configure it per instance:
 
 ```bash
-pm backup-all --push
+# Enable daily local backups at 03:00, keep 7
+pm local-backup-schedule myapp --enable --schedule '0 3 * * *' --max-keep 7
+
+# Check current schedule
+pm local-backup-schedule myapp
+
+# Disable
+pm local-backup-schedule myapp --disable
 ```
 
-This displays a table showing each instance's backup status and SFTP upload result.
+Local backups are stored in `pb_data/backups/` on the server disk.
+
+#### SFTP Backup Schedule
+
+Use `pm sftp-backup-schedule` to install a system cron job that runs `pm backup-all --push` on schedule:
+
+```bash
+# Ensure SFTP is configured first
+pm sftp-config --test
+
+# Install the cron job (runs daily at 03:00 by default)
+pm sftp-backup-schedule --enable --schedule '0 3 * * *'
+
+# Check status
+pm sftp-backup-schedule
+
+# Remove the cron job
+pm sftp-backup-schedule --disable
+```
+
+> **Note:** Requires sudo to modify the system crontab. Log output goes to `/var/log/pm-backup.log`.
+
+#### Monitoring Backup Status
+
+The `pm ls` command shows backup status for each instance:
+
+```bash
+pm ls
+```
+
+The **Local Backup** column shows whether PocketBase's internal backup scheduler is enabled for that instance. The **SFTP Backup** column shows whether the system-wide SFTP cron job is active.
 
 ---
 
@@ -814,6 +835,7 @@ pocketmanager/
     pangolin.py           # Pangolin API client
     backup.py             # Backup API wrapper
     sftp.py              # SFTP off-site backup storage
+    cron.py              # System cron management
     health.py             # Health checking
     selfupdate.py         # Self-update mechanism
   dashboard/
@@ -832,6 +854,7 @@ pocketmanager/
 - **core/pangolin.py** -- HTTP client for the Pangolin API (create/delete proxy resources, manage authentication).
 - **core/backup.py** -- Wraps the PocketBase backup REST endpoints.
 - **core/sftp.py** -- SFTP client for off-site backup storage (upload, list, delete, prune). Supports password and key-based auth.
+- **core/cron.py** -- Manages system crontab entries for automated SFTP backup jobs.
 - **core/health.py** -- Sends HTTP health probes to all instances and reports results.
 - **core/selfupdate.py** -- Checks GitHub Releases and applies updates via git.
 - **dashboard/** -- Flask-based web dashboard with a single-page frontend, REST API, and optional password auth.
