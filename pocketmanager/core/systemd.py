@@ -373,7 +373,7 @@ def get_status(name: str) -> dict:
         result = subprocess.run(
             [
                 "systemctl", "show", service_name,
-                "--property=ActiveState,ActiveEnterTimestampSec,MainPID",
+                "--property=ActiveState,ActiveEnterTimestamp,MainPID",
             ],
             capture_output=True,
             text=True,
@@ -386,12 +386,22 @@ def get_status(name: str) -> dict:
                 props[key.strip()] = value.strip()
 
         # Parse uptime
-        raw_ts = props.get("ActiveEnterTimestampSec", "")
+        # systemd exposes ActiveEnterTimestamp as a human-readable string
+        # (e.g. "Sat 2026-05-30 10:00:00 UTC").  The property name
+        # ActiveEnterTimestampSec does NOT exist, which is why uptime was
+        # always N/A.
+        raw_ts = props.get("ActiveEnterTimestamp", "")
         if raw_ts:
             try:
-                ts = float(raw_ts)
+                from datetime import datetime
                 import time
-                uptime_seconds = time.time() - ts
+
+                # Format: "DOW YYYY-MM-DD HH:MM:SS TZ" — strip TZ, parse
+                # the date/time portion.  systemd reports in local time, so
+                # a naive datetime + .timestamp() gives the correct epoch.
+                ts_without_tz = raw_ts.rsplit(" ", 1)[0]
+                dt = datetime.strptime(ts_without_tz, "%a %Y-%m-%d %H:%M:%S")
+                uptime_seconds = time.time() - dt.timestamp()
             except (ValueError, OSError):
                 pass
 
