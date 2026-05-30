@@ -73,6 +73,21 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def _fix_file_ownership(path: Path) -> None:
+    """Ensure *path* is owned by the same uid:gid as its parent directory.
+
+    This allows both root (via sudo) and the regular user to read/write
+    the config file when ``POCKETMANAGER_HOME`` points to a shared location.
+    """
+    try:
+        parent_stat = path.parent.stat()
+        file_stat = path.stat()
+        if file_stat.st_uid != parent_stat.st_uid or file_stat.st_gid != parent_stat.st_gid:
+            os.chown(path, parent_stat.st_uid, parent_stat.st_gid)
+    except (PermissionError, OSError):
+        pass  # Non-root can't chown — that's fine
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -154,8 +169,10 @@ def save_config(config: dict[str, Any]) -> None:
             fh.write("\n")
         # os.replace is atomic on the same filesystem
         os.replace(tmp_path, path)
-        # Restrict to owner-only to protect secrets (api_key, dashboard_password)
-        os.chmod(path, 0o600)
+        # Owner+group read/write so both root (sudo) and the regular user
+        # can access the shared config when POCKETMANAGER_HOME is shared.
+        os.chmod(path, 0o660)
+        _fix_file_ownership(path)
     except BaseException:
         # Clean up the temp file if anything went wrong
         try:
