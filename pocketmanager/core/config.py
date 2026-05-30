@@ -58,7 +58,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "username": "",
         "password": "",
         "private_key_path": "",
-        "remote_path": "/backups",
+        "remote_path": "backups",
         "max_remote_backups": 30,
     },
 }
