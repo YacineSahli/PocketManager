@@ -157,7 +157,7 @@ def test_connection(sftp_config: dict[str, Any]) -> tuple[bool, str]:
         remote_path: str = sftp_config.get("remote_path", "backups")
         try:
             sftp.stat(remote_path)
-        except FileNotFoundError:
+        except (FileNotFoundError, IOError):
             # Create the top-level remote directory
             _ensure_remote_dir(sftp, remote_path)
         return True, remote_path
@@ -182,16 +182,25 @@ def _instance_remote_dir(sftp_config: dict[str, Any], instance_name: str) -> str
 
 
 def _ensure_remote_dir(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
-    """Recursively create *remote_dir* on the SFTP server (like ``mkdir -p``)."""
+    """Recursively create *remote_dir* on the SFTP server (like ``mkdir -p``).
+
+    Supports both absolute (``/backups/myapp``) and relative
+    (``backups/myapp``) paths.
+    """
     parts = PurePosixPath(remote_dir).parts
     current = ""
     for part in parts:
         if not part:
             continue
-        current = f"{current}/{part}" if current else f"/{part}"
+        if current:
+            current = f"{current}/{part}"
+        elif remote_dir.startswith("/"):
+            current = f"/{part}"
+        else:
+            current = part
         try:
             sftp.stat(current)
-        except FileNotFoundError:
+        except (FileNotFoundError, IOError):
             sftp.mkdir(current)
 
 
