@@ -931,7 +931,7 @@ def _require_sftp_config() -> dict[str, Any] | None:
         "username": get("sftp.username", ""),
         "password": get("sftp.password", ""),
         "private_key_path": get("sftp.private_key_path", ""),
-        "remote_path": get("sftp.remote_path", "/backups"),
+        "remote_path": get("sftp.remote_path", "backups"),
         "max_remote_backups": get("sftp.max_remote_backups", 30),
     }
 
@@ -1076,7 +1076,7 @@ def _list_remote_backups(name: str) -> None:
 @click.option("--private-key", "sftp_key", default=None,
               help="Path to SSH private key file.")
 @click.option("--remote-path", "sftp_remote_path", default=None,
-              help="Remote directory for backups (default: /backups).")
+              help="Remote directory for backups (default: backups).")
 @click.option("--max-remote-backups", "sftp_max", default=None, type=int,
               help="Maximum remote backups to keep per instance (default: 30).")
 @click.option("--enable/--disable", default=None,
@@ -1125,7 +1125,7 @@ def sftp_config(
         current_host = sftp.get("host", "")
         current_port = sftp.get("port", 22)
         current_user = sftp.get("username", "")
-        current_path = sftp.get("remote_path", "/backups")
+        current_path = sftp.get("remote_path", "backups")
         current_max = sftp.get("max_remote_backups", 30)
         current_enabled = sftp.get("enabled", False)
 
@@ -1169,7 +1169,7 @@ def sftp_config(
         "username": sftp.get("username", ""),
         "password": sftp.get("password", ""),
         "private_key_path": sftp.get("private_key_path", ""),
-        "remote_path": sftp.get("remote_path", "/backups"),
+        "remote_path": sftp.get("remote_path", "backups"),
         "max_remote_backups": sftp.get("max_remote_backups", 30),
     }
 

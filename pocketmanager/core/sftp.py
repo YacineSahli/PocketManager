@@ -154,12 +154,12 @@ def test_connection(sftp_config: dict[str, Any]) -> tuple[bool, str]:
         return False, str(exc)
 
     try:
-        remote_path: str = sftp_config.get("remote_path", "/backups")
+        remote_path: str = sftp_config.get("remote_path", "backups")
         try:
             sftp.stat(remote_path)
         except FileNotFoundError:
             # Create the top-level remote directory
-            sftp.mkdir(remote_path)
+            _ensure_remote_dir(sftp, remote_path)
         return True, remote_path
     except Exception as exc:
         return False, str(exc)
@@ -175,9 +175,9 @@ def test_connection(sftp_config: dict[str, Any]) -> tuple[bool, str]:
 def _instance_remote_dir(sftp_config: dict[str, Any], instance_name: str) -> str:
     """Return the remote directory for *instance_name*.
 
-    Example: ``/backups/myapp``
+    Example: ``backups/myapp``
     """
-    base = sftp_config.get("remote_path", "/backups").rstrip("/")
+    base = sftp_config.get("remote_path", "backups").rstrip("/")
     return f"{base}/{instance_name}"
 
 
