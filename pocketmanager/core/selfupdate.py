@@ -43,8 +43,8 @@ def _is_editable_install() -> bool:
     Detected by checking if the clone directory (parent of the package)
     contains a ``.git`` folder.
     """
-    clone = _install_clone_dir()
-    return clone is not None and (clone / ".git").is_dir()
+    clone = _package_dir().parent
+    return (clone / ".git").is_dir()
 
 
 def _venv_root() -> Path | None:
