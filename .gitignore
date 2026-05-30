@@ -23,6 +23,7 @@ config.json
 .idea/
 .vscode/
 .opencode/
+SECURITY.md
 *.swp
 *.swo
 
