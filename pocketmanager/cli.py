@@ -298,7 +298,6 @@ def list_instances_cmd() -> None:
     table.add_column("Port", justify="right", style="magenta")
     table.add_column("Status", justify="center")
     table.add_column("Version", style="dim")
-    table.add_column("URL")
     table.add_column("Dashboard URL", style="green")
 
     for inst in instances:
@@ -309,7 +308,6 @@ def list_instances_cmd() -> None:
             str(inst.get("port", "")),
             _status_style(active),
             inst.get("version", ""),
-            _build_url(inst),
             dashboard_url,
         )
 
@@ -386,6 +384,144 @@ def restart(name: str) -> None:
     else:
         console.print(f"[bold red]Failed to restart instance '{name}'.[/bold red]")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# modify
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("name", type=INSTANCE_NAME)
+@click.option("-p", "--port", type=int, default=None, help="New HTTP port for the instance.")
+@click.option(
+    "-e",
+    "--env",
+    multiple=True,
+    help="Set an environment variable (KEY=VAL). Repeatable.",
+)
+@click.option(
+    "--rm-env",
+    multiple=True,
+    help="Remove an environment variable by key. Repeatable.",
+)
+@click.option(
+    "--restart/--no-restart",
+    "do_restart",
+    default=True,
+    help="Restart the service after modification (default: --restart).",
+)
+def modify(
+    name: str,
+    port: int | None,
+    env: tuple[str, ...],
+    rm_env: tuple[str, ...],
+    do_restart: bool,
+) -> None:
+    """Modify the systemd service configuration for an instance.
+
+    \b
+    Examples:
+      pm modify myapp -e TZ=UTC -e FOO=bar     Add/set env vars
+      pm modify myapp --rm-env FOO              Remove an env var
+      pm modify myapp -p 8091                   Change the port
+      pm modify myapp -p 8091 -e FOO=bar        Change port + add env
+      pm modify myapp --no-restart -e A=b       Modify without restarting
+
+    When no modification flags are given, prints the current service file.
+    """
+    from pocketmanager.core.state import get_instance, update_instance
+    from pocketmanager.core.systemd import (
+        get_service_path,
+        modify_service,
+        restart_service,
+    )
+
+    # No modification flags: just show the current service file
+    if port is None and not env and not rm_env:
+        service_path = get_service_path(name)
+        if not service_path.is_file():
+            console.print(
+                f"[bold red]Error: No service file found for '{name}'.[/bold red]"
+            )
+            sys.exit(1)
+        console.print(service_path.read_text(encoding="utf-8"), highlight=False)
+        return
+
+    # Validate instance exists
+    instance = get_instance(name)
+    if instance is None:
+        console.print(f"[bold red]Error: Instance '{name}' not found.[/bold red]")
+        sys.exit(1)
+
+    # Parse env vars
+    env_dict: dict[str, str] = {}
+    for item in env:
+        if "=" not in item:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid env format '{item}'. Use KEY=VAL."
+            )
+            sys.exit(1)
+        key, _, value = item.partition("=")
+        env_dict[key] = value
+
+    rm_env_list = list(rm_env)
+
+    # Apply changes
+    console.print(f"[bold]Modifying service for '{name}'...[/bold]")
+    try:
+        modify_service(
+            name=name,
+            port=port,
+            env_set=env_dict or None,
+            env_unset=rm_env_list or None,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Error: {exc}[/bold red]")
+        sys.exit(1)
+    except (ValueError, RuntimeError) as exc:
+        console.print(f"[bold red]Error: {exc}[/bold red]")
+        sys.exit(1)
+
+    # Update persisted instance state so port/env stay in sync
+    state_updates: dict = {}
+    if port is not None:
+        state_updates["port"] = port
+    if env_dict or rm_env_list:
+        current_env = dict(instance.get("env", {}))
+        for key in rm_env_list:
+            current_env.pop(key, None)
+        current_env.update(env_dict)
+        state_updates["env"] = current_env
+    if state_updates:
+        update_instance(name, state_updates)
+
+    # Build a summary of what changed
+    changes: list[str] = []
+    if port is not None:
+        changes.append(f"port → {port}")
+    for k, v in env_dict.items():
+        changes.append(f"env {k}={v}")
+    for k in rm_env_list:
+        changes.append(f"env –{k}")
+
+    console.print(f"[bold green]Service modified:[/bold green] {', '.join(changes)}")
+
+    if do_restart:
+        console.print("[dim]Restarting service to apply changes...[/dim]")
+        if restart_service(name):
+            console.print(f"[bold green]Instance '{name}' restarted.[/bold green]")
+        else:
+            console.print(
+                f"[bold yellow]Warning: Failed to restart '{name}'. "
+                "Apply changes manually with: pm restart {name}[/bold yellow]"
+            )
+    else:
+        console.print(
+            "[dim]Changes written. Restart to apply: pm restart {name}[/dim]".format(
+                name=name
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
