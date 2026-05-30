@@ -26,6 +26,8 @@ A CLI tool and web dashboard to manage multiple PocketBase instances on a single
 - [Pangolin](https://github.com/fosrl/pangolin) reverse proxy integration for automatic public URL creation
 - Pangolin resource authentication management (view status, set/remove password)
 - Backup and restore via the PocketBase backup API
+- Off-site backup to SFTP (Hetzner Storagebox, etc.) with scheduled uploads
+- Scheduled local and off-site backups via cron
 - Health checks for all running instances
 - Web dashboard for browser-based management
 - Self-updating mechanism (fetches latest release from GitHub)
@@ -130,6 +132,16 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
     "auto_backups_enabled": true,
     "auto_backups_cron": "0 3 * * *",
     "auto_backups_max_keep": 7
+  },
+  "sftp": {
+    "enabled": false,
+    "host": "",
+    "port": 22,
+    "username": "",
+    "password": "",
+    "private_key_path": "",
+    "remote_path": "backups",
+    "max_remote_backups": 30
   }
 }
 ```
@@ -151,6 +163,14 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 | `defaults.auto_backups_enabled` | Enable automatic daily backups |
 | `defaults.auto_backups_cron` | Cron schedule for automatic backups |
 | `defaults.auto_backups_max_keep` | Maximum number of automatic backups to retain |
+| `sftp.enabled` | Enable SFTP off-site backup |
+| `sftp.host` | SFTP server hostname (e.g. Storagebox) |
+| `sftp.port` | SFTP port (default: 22, Hetzner Storagebox uses 23) |
+| `sftp.username` | SFTP username |
+| `sftp.password` | SFTP password (or use `private_key_path`) |
+| `sftp.private_key_path` | Path to SSH private key for key-based auth |
+| `sftp.remote_path` | Remote directory for backups (default: `backups`) |
+| `sftp.max_remote_backups` | Maximum remote backups to keep per instance (default: 30) |
 
 View and edit configuration from the CLI:
 
@@ -218,9 +238,18 @@ pm config set port_range.min 7000  # Change port range start
 | `pm credentials <name>` | Set or update PocketBase superadmin credentials |
 | `pm backup <name>` | Create a backup of an instance |
 | `pm backup <name> --download` | Create a backup and download it locally |
+| `pm backup <name> --push` | Create a backup and upload to SFTP |
 | `pm backup <name> --name mybackup` | Create a backup with a custom name |
-| `pm backups <name>` | List all backups for an instance |
+| `pm backups <name>` | List all local backups for an instance |
+| `pm backups <name> --remote` | List backups on the SFTP server |
+| `pm push-backup <name> [key]` | Upload a backup to SFTP |
 | `pm restore <name> <key>` | Restore an instance from a specific backup |
+| `pm backup-all` | Create a backup of all instances |
+| `pm backup-all --push` | Create backups and push all to SFTP |
+| `pm local-backup-schedule <name>` | Show/configure local backup schedule |
+| `pm sftp-backup-schedule` | Show/configure SFTP backup cron |
+| `pm sftp-config` | Show/configure SFTP connection settings |
+| `pm sftp-config --test` | Test SFTP connection |
 
 ### Updates
 
@@ -568,7 +597,14 @@ curl -X DELETE http://localhost:<port>/api/backups/<backup_key> \
 
 ### Automatic Backups
 
-PocketManager supports automatic daily backups via cron. Configure this in your configuration:
+PocketManager provides two scheduling commands:
+
+- **Local backups** (`pm local-backup-schedule`) — configures PocketBase's built-in backup cron per instance. Archives are stored in `pb_data/backups/` on the server disk.
+- **Off-site backups** (`pm sftp-backup-schedule`) — installs a system cron job that runs `pm backup-all --push` to create and upload backups to an SFTP server.
+
+See [Local Backup Schedule](#local-backup-schedule) and [SFTP Backup Schedule](#sftp-backup-schedule) for details.
+
+The default schedule for new instances is set in `config.json`:
 
 ```json
 {
@@ -580,7 +616,7 @@ PocketManager supports automatic daily backups via cron. Configure this in your 
 }
 ```
 
-This example runs backups every day at 03:00 UTC and retains the last 7 backups (oldest are automatically deleted when the limit is exceeded).
+These defaults are applied when an instance is created. Override per-instance with `pm local-backup-schedule`.
 
 ### Backup and Restore Workflow Example
 
@@ -664,7 +700,7 @@ pm sftp-config
 Backups are organized in per-instance folders on the remote server:
 
 ```
-/backups/
+backups/
   myapp/
     pb_backup_acme_20260530143000.zip
     pb_backup_acme_20260531030000.zip
@@ -717,7 +753,7 @@ pm sftp-config --max-remote-backups 14
 | `--username` | _(empty)_ | SFTP username |
 | `--password` | _(empty)_ | SFTP password |
 | `--private-key` | _(empty)_ | Path to SSH private key |
-| `--remote-path` | `/backups` | Remote directory root |
+| `--remote-path` | `backups` | Remote directory root (relative to SFTP home) |
 | `--max-remote-backups` | `30` | Max backups per instance |
 | `--enable / --disable` | `disabled` | Enable or disable SFTP |
 
@@ -834,8 +870,8 @@ pocketmanager/
     instance.py           # Main instance orchestrator
     pangolin.py           # Pangolin API client
     backup.py             # Backup API wrapper
-    sftp.py              # SFTP off-site backup storage
-    cron.py              # System cron management
+    sftp.py               # SFTP off-site backup storage
+    cron.py               # System cron management
     health.py             # Health checking
     selfupdate.py         # Self-update mechanism
   dashboard/
