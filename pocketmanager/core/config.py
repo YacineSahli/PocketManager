@@ -42,7 +42,6 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "org_id": "",
         "default_domain_id": "",
         "default_domain": "",
-        "subdomain_suffix": "",
         "site_id": "",
         "target_ip": "172.19.0.1",
     },

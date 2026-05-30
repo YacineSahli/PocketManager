@@ -169,7 +169,6 @@ def _create_superadmin(port: int) -> tuple[str, str] | None:
 def create_instance(
     name: str,
     port: int | None = None,
-    subdomain: str | None = None,
     domain: str | None = None,
     env: dict[str, str] | None = None,
     version: str | None = None,
@@ -188,10 +187,10 @@ def create_instance(
     port:
         HTTP port.  If ``None``, the next free port in the configured range is
         allocated automatically.
-    subdomain:
-        Optional subdomain label (for pangolin / reverse-proxy integration).
     domain:
-        Optional custom domain.
+        Full domain for the instance (e.g. ``"myapp.apps.example.com"``).
+        Used both as the public URL and to derive the subdomain for Pangolin
+        integration by stripping the configured ``pangolin.default_domain``.
     env:
         Extra environment variables passed to the service.
     version:
@@ -287,13 +286,19 @@ def create_instance(
         try:
             from pocketmanager.core import pangolin as pangolin_mod  # noqa: F811
 
-            # Apply subdomain suffix (e.g. "testtmp" + ".apps" -> "testtmp.apps")
-            pangolin_subdomain = subdomain
-            if subdomain:
-                suffix = get("pangolin.subdomain_suffix", "")
-                if suffix and not subdomain.endswith(suffix.lstrip(".")):
-                    # Ensure exactly one dot between subdomain and suffix
-                    pangolin_subdomain = f"{subdomain}.{suffix.lstrip('.')}"
+            # Derive the subdomain for Pangolin from the full domain by
+            # stripping the configured default_domain.  For example, if
+            # domain="myapp.apps.example.com" and
+            # pangolin.default_domain="example.com", the subdomain sent to
+            # Pangolin is "myapp.apps".
+            pangolin_subdomain: str | None = None
+            if domain:
+                default_domain = get("pangolin.default_domain", "")
+                if default_domain and domain.endswith(f".{default_domain}"):
+                    pangolin_subdomain = domain[: -(len(default_domain) + 1)]
+                else:
+                    # No matching base domain — use the full domain as subdomain
+                    pangolin_subdomain = domain
 
             site_id_raw = get("pangolin.site_id", "")
             site_id = int(site_id_raw) if site_id_raw else 0
@@ -321,7 +326,6 @@ def create_instance(
         "port": port,
         "version": version,
         "instance_dir": str(instance_dir),
-        "subdomain": subdomain,
         "domain": domain,
         "env": env or {},
         "pangolin_resource_id": pangolin_resource_id,
@@ -708,7 +712,6 @@ def migrate_existing() -> list[dict]:
             "port": port,
             "version": detected_version,
             "instance_dir": working_dir,
-            "subdomain": None,
             "domain": None,
             "env": env_vars,
             "pangolin_resource_id": None,
