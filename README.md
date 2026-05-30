@@ -21,16 +21,16 @@ A CLI tool and web dashboard to manage multiple PocketBase instances on a single
 ## Features
 
 - Create, start, stop, restart, and remove PocketBase instances from the CLI
-- Interactive and non-interactive instance creation with port, domain, subdomain, and environment variable support
+- Interactive and non-interactive instance creation with port, domain, and environment variable support
 - Automatic systemd service management for each instance
 - [Pangolin](https://github.com/fosrl/pangolin) reverse proxy integration for automatic public URL creation
 - Pangolin resource authentication management (view status, set/remove password)
 - Backup and restore via the PocketBase backup API
-- Off-site backup to SFTP (Hetzner Storagebox, etc.) with scheduled uploads
-- Scheduled local and off-site backups via cron
+- Off-site backup to SFTP (Hetzner Storagebox, etc.) with scheduled uploads via systemd timer
+- Scheduled local backups via PocketBase's built-in cron and off-site backups via systemd timer
 - Health checks for all running instances
 - Web dashboard for browser-based management
-- Self-updating mechanism (fetches latest release from GitHub)
+- Self-updating mechanism (pip-based updates from GitHub)
 - Automatic port allocation to avoid conflicts
 - Import existing manually-created PocketBase instances
 - Migrate-existing instances from the command line
@@ -53,7 +53,8 @@ PocketManager separates **configuration** (static settings) from **state** (muta
 
 | Path | Purpose |
 |------|---------|
-| `~/pocketmanager/` | Tool installation directory |
+| `~/.local/lib/python3.12/site-packages/pocketmanager/` | Package installation directory (pip --user) |
+| `~/.local/bin/pm` | CLI entry point (pip-generated wrapper) |
 | `/etc/pocketmanager/config.json` | Global configuration |
 | `/var/lib/pocketmanager/instances.json` | Instance state (registered instances, versions, ports) |
 | `~/.pocketmanager/cache/` | Downloaded PocketBase binaries cache |
@@ -77,30 +78,22 @@ curl -sSL https://raw.githubusercontent.com/yacinesahli/PocketManager/master/ins
 
 The installer will:
 
-1. Clone the PocketManager repository into `~/pocketmanager`
-2. Create a Python virtual environment
-3. Install the package and its dependencies
-4. Add the `pm` command to your PATH
-5. Set up the `pocketbase` system user if it does not already exist
+1. Check requirements (Python 3.10+, pip, git, curl, jq, systemd)
+2. Install PocketManager via `pip install git+https://github.com/yacinesahli/PocketManager.git@master`
+3. Create the `pocketbase` system user and data directories
+4. Detect existing PocketBase instances and offer to migrate them
+5. Offer Pangolin reverse-proxy setup (interactive)
 
 ---
 
 ## Manual Installation
 
 ```bash
-git clone https://github.com/yacinesahli/PocketManager.git ~/pocketmanager
-cd ~/pocketmanager
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+pip install --user git+https://github.com/yacinesahli/PocketManager.git
 pm --help
 ```
 
-To make `pm` available without activating the virtual environment every time, add the following to your shell profile (`~/.bashrc` or `~/.zshrc`):
-
-```bash
-export PATH="$HOME/pocketmanager/.venv/bin:$PATH"
-```
+> **Note:** Requires Python 3.10+ and pip. The `--user` flag installs to `~/.local/bin/pm`.
 
 ---
 
@@ -125,7 +118,6 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
     "org_id": "",
     "default_domain_id": "",
     "default_domain": "",
-    "subdomain_suffix": "",
     "site_id": ""
   },
   "defaults": {
@@ -157,9 +149,9 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 | `pangolin.api_key` | API key for your Pangolin instance |
 | `pangolin.org_id` | Organization ID in Pangolin (text ID, e.g. `yacine`) |
 | `pangolin.default_domain_id` | Domain ID to use for subdomain-based instances (e.g. `domain1`) |
-| `pangolin.default_domain` | **Base domain** used to build public URLs. This is the root domain (e.g. `yacinesahli.com`), **not** including any subdomain suffix |
-| `pangolin.subdomain_suffix` | Optional suffix appended to subdomains. If your resources live at `*.apps.example.com`, set this to `apps` and `default_domain` to `example.com` |
-| `pangolin.site_id` | Site ID for Pangolin resource creation (the site connected to your VPS) |
+| `pangolin.default_domain` | **Full base domain** used to build public URLs (e.g. `yacinesahli.com`). Subdomains are derived by stripping this from the instance domain |
+| `pangolin.site_id` | Site ID for Pangolin resource creation (the site connected to your VPS). Can be a text niceId (e.g. `brilliant-meadow-vole`) or numeric ID |
+| `pangolin.target_ip` | IP address Pangolin should proxy to (default: `127.0.0.1`). Use the Docker bridge IP (e.g. `172.19.0.1`) if PocketBase is not containerized |
 | `defaults.auto_backups_enabled` | Enable automatic daily backups |
 | `defaults.auto_backups_cron` | Cron schedule for automatic backups |
 | `defaults.auto_backups_max_keep` | Maximum number of automatic backups to retain |
@@ -192,7 +184,7 @@ pm config set port_range.min 7000  # Change port range start
 | Command | Description |
 |---------|-------------|
 | `pm create <name>` | Create a new instance (interactive mode) |
-| `pm create <name> -p 8110 -d example.com -s pb -e KEY=VAL` | Create with explicit options |
+| `pm create <name> -p 8110 -d pb.example.com -e KEY=VAL` | Create with explicit options |
 | `pm ls` | List all instances with status |
 | `pm start <name>` | Start a stopped instance |
 | `pm stop <name>` | Stop a running instance |
@@ -247,7 +239,7 @@ pm config set port_range.min 7000  # Change port range start
 | `pm backup-all` | Create a backup of all instances |
 | `pm backup-all --push` | Create backups and push all to SFTP |
 | `pm local-backup-schedule <name>` | Show/configure local backup schedule |
-| `pm sftp-backup-schedule` | Show/configure SFTP backup cron |
+| `pm sftp-backup-schedule` | Show/configure SFTP backup systemd timer |
 | `pm sftp-config` | Show/configure SFTP connection settings |
 | `pm sftp-config --test` | Test SFTP connection |
 
@@ -325,9 +317,10 @@ When you run `pm create myapp`, PocketManager performs the following steps:
 3. **Creates the instance directory** at `~/pocketbases/pocketbase-myapp/`
 4. **Generates a systemd service file** at `/etc/systemd/system/pocketbase-myapp.service`
 5. **Enables and starts the service**
-6. **Creates a Pangolin resource** (if Pangolin is configured) with the appropriate domain or subdomain
-7. **Registers the instance** in `instances.json`
-8. **Runs a health check** to verify the instance is responding
+6. **Creates a superadmin account** using the PocketBase CLI (`superuser upsert`) before the service starts, so the instance is immediately accessible via API
+7. **Creates a Pangolin resource** (if Pangolin is configured and domain is provided)
+8. **Registers the instance** in `instances.json`
+9. **Runs a health check** to verify the instance is responding
 
 ### Instance Directory Structure
 
@@ -419,27 +412,15 @@ You will also need three IDs from your Pangolin dashboard:
 |----|------------------|
 | `org_id` | Visible in the dashboard URL: `https://apps.example.com/<org_id>/...` |
 | `default_domain_id` | Organization → Domains (e.g. `domain1`) |
-| `site_id` | Sites page — the site connected to your VPS (e.g. `1`) |
+| `site_id` | Sites page — the site connected to your VPS (can be text niceId like `brilliant-meadow-vole` or numeric) |
 
-### Subdomain Suffix
+### Domain Configuration
 
-If your Pangolin domain uses a subdomain pattern (e.g. resources are at `*.apps.example.com` instead of `*.example.com`), set the `subdomain_suffix` config. This works together with `default_domain`:
+When creating an instance with `pm create myapp -d pb.example.com`, PocketManager creates a Pangolin resource with the full domain. The Pangolin subdomain is automatically derived by stripping the `pangolin.default_domain` from the provided domain.
 
-| Config | Value | Purpose |
-|--------|-------|---------|
-| `default_domain` | `example.com` | The root domain in Pangolin |
-| `subdomain_suffix` | `apps` | Appended to subdomains when creating resources |
-
-```bash
-pm config set pangolin.default_domain example.com
-pm config set pangolin.subdomain_suffix apps
-```
-
-With these settings, `pm create myapp -s myapp` will:
-1. Create the Pangolin resource with subdomain `myapp.apps`
-2. Display the URL as `https://myapp.apps.example.com`
-
-If your resources are at `*.example.com` directly (no suffix), leave `subdomain_suffix` empty and set `default_domain` to `example.com`.
+For example, with `pangolin.default_domain = yacinesahli.com`:
+- `pm create myapp -d pb.yacinesahli.com` → Pangolin subdomain: `pb`
+- `pm create myapp -d api.apps.yacinesahli.com` → Pangolin subdomain: `api.apps`
 
 ### Configuration
 
@@ -451,9 +432,8 @@ pm config set pangolin.api_url http://localhost:3003/v1
 pm config set pangolin.api_key YOUR_API_KEY
 pm config set pangolin.org_id YOUR_ORG_ID             # text ID from Pangolin (e.g. "yacine")
 pm config set pangolin.default_domain_id YOUR_DOMAIN_ID # domain ID from Pangolin (e.g. "domain1")
-pm config set pangolin.site_id YOUR_SITE_ID             # numeric site ID (e.g. "1")
+pm config set pangolin.site_id brilliant-meadow-vole        # text niceId or numeric site ID from Pangolin
 pm config set pangolin.default_domain example.com        # base domain (root, no subdomain prefix)
-pm config set pangolin.subdomain_suffix apps             # optional: if resources are at *.apps.example.com
 pm config set pangolin.target_ip 172.19.0.1              # Docker bridge gateway IP (or 127.0.0.1)
 ```
 
@@ -470,7 +450,6 @@ pm config set pangolin.target_ip 172.19.0.1              # Docker bridge gateway
 ### How It Works
 
 - When creating an instance with `pm create myapp -d api.example.com`, PocketManager creates a Pangolin resource that proxies `https://api.example.com` to the instance's local port.
-- When creating with a subdomain (`-s myapp`), PocketManager uses the configured `default_domain` and `subdomain_suffix` to build the full URL (e.g. `https://myapp.apps.yacinesahli.com`).
 - When removing an instance, the corresponding Pangolin resource is also deleted.
 
 > **Note:** Pangolin enables SSO authentication by default on new resources. This means visitors must authenticate via Pangolin before reaching your PocketBase instance. For PocketBase instances that need to be publicly accessible (e.g. serving a public API), use `pm auth <name> --no-password` to remove password auth or manage auth via the Pangolin dashboard.
@@ -600,7 +579,7 @@ curl -X DELETE http://localhost:<port>/api/backups/<backup_key> \
 PocketManager provides two scheduling commands:
 
 - **Local backups** (`pm local-backup-schedule`) — configures PocketBase's built-in backup cron per instance. Archives are stored in `pb_data/backups/` on the server disk.
-- **Off-site backups** (`pm sftp-backup-schedule`) — installs a system cron job that runs `pm backup-all --push` to create and upload backups to an SFTP server.
+- **Off-site backups** (`pm sftp-backup-schedule`) — creates a systemd timer that runs `pm backup-all --push` to create and upload backups to an SFTP server.
 
 See [Local Backup Schedule](#local-backup-schedule) and [SFTP Backup Schedule](#sftp-backup-schedule) for details.
 
@@ -793,23 +772,32 @@ Local backups are stored in `pb_data/backups/` on the server disk.
 
 #### SFTP Backup Schedule
 
-Use `pm sftp-backup-schedule` to install a system cron job that runs `pm backup-all --push` on schedule:
+Use `pm sftp-backup-schedule` to create a systemd timer that runs `pm backup-all --push` on schedule:
 
 ```bash
 # Ensure SFTP is configured first
 pm sftp-config --test
 
-# Install the cron job (runs daily at 03:00 by default)
+# Install the timer (runs daily at 03:00 by default)
 pm sftp-backup-schedule --enable --schedule '0 3 * * *'
 
 # Check status
 pm sftp-backup-schedule
 
-# Remove the cron job
+# Remove the timer
 pm sftp-backup-schedule --disable
 ```
 
-> **Note:** Requires sudo to modify the system crontab. Log output goes to `/var/log/pm-backup.log`.
+This creates two systemd units:
+- `pm-sftp-backup.timer` — triggers on schedule
+- `pm-sftp-backup.service` — runs `pm backup-all --push` as the installing user (not root)
+
+View logs with:
+```bash
+journalctl -u pm-sftp-backup.service
+```
+
+The timer automatically cleans up any legacy root crontab entries from older PocketManager versions.
 
 #### Monitoring Backup Status
 
@@ -819,7 +807,7 @@ The `pm ls` command shows backup status for each instance:
 pm ls
 ```
 
-The **Local Backup** column shows whether PocketBase's internal backup scheduler is enabled for that instance. The **SFTP Backup** column shows whether the system-wide SFTP cron job is active.
+The **Local Backup** column queries PocketBase's actual backup cron setting (not just a stored flag). The **SFTP Backup** column shows whether the `pm-sftp-backup` systemd timer is active.
 
 ---
 
@@ -843,10 +831,9 @@ pm self-update
 
 The command:
 
-1. Checks the GitHub Releases API for the latest version
-2. Compares it against the currently installed version
-3. If a newer version is available, displays the release notes and asks for confirmation
-4. Pulls the update via `git pull` and reinstalls the package
+1. Compares the latest commit on GitHub with the locally installed commit
+2. If a newer commit is found, displays the incoming commits and asks for confirmation
+3. Reinstalls the package via `pip install --force-reinstall --no-cache-dir`
 
 You can check the current version at any time:
 
@@ -890,9 +877,9 @@ pocketmanager/
 - **core/pangolin.py** -- HTTP client for the Pangolin API (create/delete proxy resources, manage authentication).
 - **core/backup.py** -- Wraps the PocketBase backup REST endpoints.
 - **core/sftp.py** -- SFTP client for off-site backup storage (upload, list, delete, prune). Supports password and key-based auth.
-- **core/cron.py** -- Manages system crontab entries for automated SFTP backup jobs.
+- **core/cron.py** -- Manages the pm-sftp-backup systemd timer/service for automated SFTP backup jobs.
 - **core/health.py** -- Sends HTTP health probes to all instances and reports results.
-- **core/selfupdate.py** -- Checks GitHub Releases and applies updates via git.
+- **core/selfupdate.py** -- Checks GitHub commit history and applies updates via pip.
 - **dashboard/** -- Flask-based web dashboard with a single-page frontend, REST API, and optional password auth.
 
 ---
