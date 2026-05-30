@@ -28,39 +28,47 @@ from typing import Any
 # Defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_CONFIG: dict[str, Any] = {
-    "base_dir": "/home/ubuntu/pocketbases",
-    "cache_dir": "/home/ubuntu/.pocketmanager/cache",
-    "dashboard_port": 8888,
-    "dashboard_password": "",
-    "dashboard_pangolin_resource_id": "",
-    "port_range": {"min": 8090, "max": 8999},
-    "pangolin": {
-        "dashboard_url": "https://apps.yacinesahli.com",
-        "api_url": "https://api.apps.yacinesahli.com/v1",
-        "api_key": "",
-        "org_id": "",
-        "default_domain_id": "",
-        "default_domain": "",
-        "site_id": "",
-        "target_ip": "172.19.0.1",
-    },
-    "defaults": {
-        "auto_backups_enabled": True,
-        "auto_backups_cron": "0 3 * * *",
-        "auto_backups_max_keep": 7,
-    },
-    "sftp": {
-        "enabled": False,
-        "host": "",
-        "port": 22,
-        "username": "",
-        "password": "",
-        "private_key_path": "",
-        "remote_path": "backups",
-        "max_remote_backups": 30,
-    },
-}
+def _default_config() -> dict[str, Any]:
+    """Return the full default configuration structure.
+
+    Uses the current user's home directory instead of hard-coding paths.
+    """
+    import copy
+
+    home = str(Path.home())
+    return {
+        "base_dir": f"{home}/pocketbases",
+        "cache_dir": f"{home}/.pocketmanager/cache",
+        "dashboard_port": 8888,
+        "dashboard_password": "",
+        "dashboard_pangolin_resource_id": "",
+        "port_range": {"min": 8090, "max": 8999},
+        "pangolin": {
+            "dashboard_url": "",
+            "api_url": "",
+            "api_key": "",
+            "org_id": "",
+            "default_domain_id": "",
+            "default_domain": "",
+            "site_id": "",
+            "target_ip": "127.0.0.1",
+        },
+        "defaults": {
+            "auto_backups_enabled": True,
+            "auto_backups_cron": "0 3 * * *",
+            "auto_backups_max_keep": 7,
+        },
+        "sftp": {
+            "enabled": False,
+            "host": "",
+            "port": 22,
+            "username": "",
+            "password": "",
+            "private_key_path": "",
+            "remote_path": "backups",
+            "max_remote_backups": 30,
+        },
+    }
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -104,9 +112,7 @@ def _fix_file_ownership(path: Path) -> None:
 
 def get_default_config() -> dict[str, Any]:
     """Return the full default configuration structure."""
-    import copy
-
-    return copy.deepcopy(_DEFAULT_CONFIG)
+    return _default_config()
 
 
 def get_config_dir() -> Path:

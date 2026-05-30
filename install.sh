@@ -17,8 +17,8 @@ step()    { echo -e "\n${BOLD}[$1/$TOTAL_STEPS]${NC} $2"; }
 REPO_URL="https://github.com/yacinesahli/PocketManager.git"
 INSTALL_DIR="$HOME/pocketmanager"
 VENV_DIR="$INSTALL_DIR/.venv"
-POCKETBASES_DIR="/home/ubuntu/pocketbases"
-CACHE_DIR="/home/ubuntu/.pocketmanager/cache"
+POCKETBASES_DIR="$HOME/pocketbases"
+CACHE_DIR="$HOME/.pocketmanager/cache"
 CONFIG_DIR="/etc/pocketmanager"
 STATE_DIR="/var/lib/pocketmanager"
 TOTAL_STEPS=9
@@ -315,27 +315,23 @@ migrate_existing() {
 add_to_path() {
     step 7 "Configuring PATH..."
 
-    local path_entry="export PATH=\"\$HOME/pocketmanager/.venv/bin:\$PATH\""
-    local bashrc="$HOME/.bashrc"
+    # Create symlink so `pm` is available everywhere (cron, systemd, scripts)
+    sudo ln -sf "$VENV_DIR/bin/pm" /usr/local/bin/pm
+    info "Created symlink: /usr/local/bin/pm -> ${VENV_DIR}/bin/pm"
 
+    # Remove legacy bashrc PATH entry (no longer needed with symlink)
+    local bashrc="$HOME/.bashrc"
     if grep -qF 'pocketmanager/.venv/bin' "$bashrc" 2>/dev/null; then
-        info "PATH entry already exists in ${bashrc}."
-    else
-        echo "" >> "$bashrc"
-        echo "# Added by PocketManager installer" >> "$bashrc"
-        echo "$path_entry" >> "$bashrc"
-        info "Added PATH entry to ${bashrc}."
+        sed -i '/pocketmanager\/.venv\/bin/d' "$bashrc"
+        sed -i '/# Added by PocketManager installer/d' "$bashrc"
+        info "Removed legacy PATH entry from ${bashrc}."
     fi
 
-    # Remove legacy POCKETMANAGER_HOME from bashrc (no longer needed)
+    # Remove legacy POCKETMANAGER_HOME from bashrc
     if grep -qF 'POCKETMANAGER_HOME' "$bashrc" 2>/dev/null; then
         sed -i '/POCKETMANAGER_HOME/d' "$bashrc"
         info "Removed legacy POCKETMANAGER_HOME from ${bashrc}."
     fi
-
-    # Create symlink
-    sudo ln -sf "$VENV_DIR/bin/pm" /usr/local/bin/pm
-    info "Created symlink: /usr/local/bin/pm -> ${VENV_DIR}/bin/pm"
 }
 
 # ─── Step 8: Configure Pangolin (interactive) ────────────────────────────────
@@ -481,9 +477,6 @@ print_success() {
         echo -e "       ${BOLD}pm config set pangolin.default_domain_id YOUR_DOMAIN_ID${NC}"
         echo -e "       ${BOLD}pm config set pangolin.site_id YOUR_SITE_ID${NC}"
     fi
-    echo ""
-    echo -e "  ${YELLOW}Note:${NC} Run ${BOLD}source ~/.bashrc${NC} or open a new terminal"
-    echo -e "         to apply PATH changes."
     echo ""
 }
 

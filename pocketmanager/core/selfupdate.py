@@ -1,52 +1,107 @@
 """Self-update mechanism for PocketManager.
 
-Checks for updates by comparing the latest GitHub commit with the locally
-installed commit hash (stored in ``_COMMIT_HASH``).  Installs the latest
-version via ``pip`` when an update is available.
+Detects the installation method (venv editable install vs. pip --user) and
+updates accordingly.  The recommended install uses a git clone + venv at
+``$HOME/pocketmanager/``, so self-update does a ``git pull`` followed by
+``pip install -e .`` inside the venv.
+
+For non-venv installs, falls back to ``pip install --force-reinstall``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
 # GitHub repository details
+_REPO_URL = "https://github.com/YacineSahli/PocketManager.git"
 _REPO_API = "https://api.github.com/repos/YacineSahli/PocketManager"
-_REPO_URL = "git+https://github.com/YacineSahli/PocketManager.git@master"
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Installation detection
 # ---------------------------------------------------------------------------
 
 
-def _install_root() -> Path:
-    """Return the project root directory (where ``pyproject.toml`` lives)."""
-    return Path(__file__).resolve().parent.parent.parent
+def _package_dir() -> Path:
+    """Return the directory containing the pocketmanager package."""
+    return Path(__file__).resolve().parent.parent  # pocketmanager/core/ → pocketmanager/
+
+
+def _is_venv() -> bool:
+    """Return True if running inside a virtual environment."""
+    return sys.prefix != sys.base_prefix
+
+
+def _is_editable_install() -> bool:
+    """Return True if installed in editable (develop) mode.
+
+    Editable installs have a ``__editable__`` finder or a ``.egg-link`` in
+    the site-packages.  We detect it by checking if the package directory
+    contains a ``.git`` folder (i.e. it's a git clone, not a wheel install).
+    """
+    pkg = _package_dir()
+    return (pkg / ".git").is_dir()
+
+
+def _venv_root() -> Path | None:
+    """Return the venv root (contains ``bin/``, ``lib/``), or None."""
+    if _is_venv():
+        return Path(sys.prefix)
+    return None
+
+
+def _install_clone_dir() -> Path | None:
+    """Return the git clone directory for the install, or None.
+
+    For editable installs, this is the package directory's parent
+    (since pocketmanager/ is inside the clone).
+    """
+    if _is_editable_install():
+        return _package_dir().parent
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Commit tracking
+# ---------------------------------------------------------------------------
 
 
 def _read_local_commit() -> str:
     """Return the installed commit hash from the marker file, or ``""``."""
-    marker = _install_root() / "pocketmanager" / "commit.txt"
+    marker = _package_dir() / "commit.txt"
     try:
         return marker.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
-        # Fallback: try git if the install is from a git clone
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=_install_root(),
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception:
-            pass
+        # Fallback: read from git if it's an editable install
+        clone = _install_clone_dir()
+        if clone:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=clone,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except Exception:
+                pass
         return ""
+
+
+def _write_local_commit(hash_val: str) -> None:
+    """Write the commit hash to the marker file."""
+    marker = _package_dir() / "commit.txt"
+    try:
+        marker.write_text(hash_val + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _fetch_remote_commit() -> str:
@@ -63,9 +118,7 @@ def _fetch_remote_commit() -> str:
 
 def _fetch_commit_log(local_hash: str, remote_hash: str) -> str:
     """Fetch one-line commit log between two hashes from GitHub API."""
-    url = (
-        f"{_REPO_API}/compare/{local_hash}...{remote_hash}"
-    )
+    url = f"{_REPO_API}/compare/{local_hash}...{remote_hash}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "PocketManager"})
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -117,22 +170,103 @@ def check_for_update() -> dict | None:
 
 
 def perform_update() -> bool:
-    """Reinstall PocketManager from the GitHub repository via pip.
+    """Update PocketManager.
 
-    Uses ``--force-reinstall`` and ``--no-cache-dir`` to ensure the latest
-    code is fetched and installed, bypassing any pip caching issues.
+    Detects the installation method and uses the appropriate strategy:
+
+    - **Venv + editable install** (recommended): ``git pull`` in the clone
+      directory, then ``pip install -e .`` using the venv's pip.
+    - **System/user pip install**: ``pip install --force-reinstall`` from
+      the git repo URL.
 
     Returns ``True`` on success, ``False`` on failure.
     """
+    # Guard: refuse to run as root
+    if os.geteuid() == 0:
+        real_user = os.environ.get("SUDO_USER", "")
+        print(
+            f"Error: refusing to run self-update as root. "
+            f"Run as your normal user instead."
+            f"{f' (try: sudo -u {real_user} pm self-update)' if real_user else ''}"
+        )
+        return False
+
+    venv = _venv_root()
+    clone = _install_clone_dir()
+
+    if venv and clone:
+        return _update_venv_editable(venv, clone)
+
+    return _update_pip_user()
+
+
+def _update_venv_editable(venv: Path, clone: Path) -> bool:
+    """Update a venv-based editable install: git pull + pip install -e ."""
+    pip = venv / "bin" / "pip"
+
+    # Step 1: git pull
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"git pull failed: {exc}")
+        return False
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "unrelated histories" in stderr:
+            print(
+                "git pull failed: unrelated histories detected.\n"
+                "The remote repository was likely force-pushed.\n"
+                f"Fix: rm -rf {clone} && pm self-update  (will re-clone)\n"
+                f"Or re-run the installer: bash <(curl -fsSL ...)"
+            )
+        else:
+            print(f"git pull failed: {stderr}")
+        return False
+
+    print(result.stdout.strip())
+
+    # Step 2: pip install -e . (in the venv)
+    try:
+        result = subprocess.run(
+            [str(pip), "install", "-e", str(clone)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"pip install failed: {exc}")
+        return False
+
+    if result.returncode != 0:
+        print(f"pip install failed: {result.stderr.strip()}")
+        return False
+
+    # Step 3: update commit marker
+    new_hash = _fetch_remote_commit()
+    if new_hash:
+        _write_local_commit(new_hash)
+
+    return True
+
+
+def _update_pip_user() -> bool:
+    """Fallback: reinstall from GitHub via pip."""
     try:
         result = subprocess.run(
             [
-                "pip", "install",
+                sys.executable, "-m", "pip", "install",
                 "--user",
                 "--break-system-packages",
                 "--force-reinstall",
                 "--no-cache-dir",
-                _REPO_URL,
+                f"git+{_REPO_URL}@master",
             ],
             capture_output=True,
             text=True,
@@ -145,13 +279,9 @@ def perform_update() -> bool:
         print(f"pip install failed: {result.stderr.strip()}")
         return False
 
-    # Write the new commit hash to the marker file
+    # Update commit marker
     new_hash = _fetch_remote_commit()
     if new_hash:
-        marker = _install_root() / "pocketmanager" / "commit.txt"
-        try:
-            marker.write_text(new_hash + "\n", encoding="utf-8")
-        except OSError:
-            pass
+        _write_local_commit(new_hash)
 
     return True
