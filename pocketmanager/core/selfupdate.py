@@ -40,12 +40,11 @@ def _is_venv() -> bool:
 def _is_editable_install() -> bool:
     """Return True if installed in editable (develop) mode.
 
-    Editable installs have a ``__editable__`` finder or a ``.egg-link`` in
-    the site-packages.  We detect it by checking if the package directory
-    contains a ``.git`` folder (i.e. it's a git clone, not a wheel install).
+    Detected by checking if the clone directory (parent of the package)
+    contains a ``.git`` folder.
     """
-    pkg = _package_dir()
-    return (pkg / ".git").is_dir()
+    clone = _install_clone_dir()
+    return clone is not None and (clone / ".git").is_dir()
 
 
 def _venv_root() -> Path | None:
