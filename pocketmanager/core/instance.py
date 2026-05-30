@@ -688,6 +688,20 @@ def migrate_existing() -> list[dict]:
         except Exception:
             pass
 
+        # Configure auto-backup cron in PocketBase if enabled
+        auto_backup_enabled = get("defaults.auto_backups_enabled", True)
+        if auto_backup_enabled:
+            try:
+                from pocketmanager.core.backup import configure_auto_backup
+
+                cron_expr = get("defaults.auto_backups_cron", "0 3 * * *")
+                max_keep = get("defaults.auto_backups_max_keep", 7)
+                configure_auto_backup(
+                    f"http://127.0.0.1:{port}", cron_expr, max_keep,
+                )
+            except Exception:
+                pass
+
         # Register in state
         instance_record: dict[str, Any] = {
             "name": name,
@@ -697,7 +711,9 @@ def migrate_existing() -> list[dict]:
             "domain": None,
             "env": env_vars,
             "pangolin_resource_id": None,
-            "auto_backup": get("defaults.auto_backups_enabled", True),
+            "auto_backup": auto_backup_enabled,
+            "backup_cron": get("defaults.auto_backups_cron", "0 3 * * *") if auto_backup_enabled else "",
+            "backup_max_keep": get("defaults.auto_backups_max_keep", 7) if auto_backup_enabled else 0,
         }
         state_add_instance(instance_record)
         migrated.append(state_get_instance(name))  # type: ignore[arg-type]

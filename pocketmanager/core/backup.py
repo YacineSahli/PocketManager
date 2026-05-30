@@ -119,6 +119,33 @@ def create_backup(
         return False
 
 
+def get_backup_cron_status(instance_url: str) -> dict[str, Any]:
+    """Query PocketBase's backup cron configuration.
+
+    Returns a dict with:
+      - ``enabled``: bool — whether a cron expression is set
+      - ``cron``: str — the cron expression (empty if disabled)
+      - ``max_keep``: int — max backups to retain
+    Returns ``{"enabled": False, "cron": "", "max_keep": 0}`` on failure.
+    """
+    try:
+        resp = requests.get(
+            f"{instance_url}/api/settings",
+            timeout=5,
+        )
+        resp.raise_for_status()
+        settings = resp.json()
+        backups = settings.get("backups", {})
+        cron = backups.get("cron", "")
+        return {
+            "enabled": bool(cron),
+            "cron": cron,
+            "max_keep": backups.get("cronMaxKeep", 0),
+        }
+    except Exception:
+        return {"enabled": False, "cron": "", "max_keep": 0}
+
+
 def list_backups(
     instance_url: str,
     *,
