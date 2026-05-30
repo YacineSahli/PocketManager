@@ -45,3 +45,6 @@ Issues = "https://github.com/yacinesahli/PocketManager/issues"
 
 [tool.setuptools.packages.find]
 include = ["pocketmanager*"]
+
+[tool.setuptools.package-data]
+pocketmanager = ["commit.txt"]

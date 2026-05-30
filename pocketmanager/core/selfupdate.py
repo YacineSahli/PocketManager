@@ -1,15 +1,19 @@
 """Self-update mechanism for PocketManager.
 
-Compares the local git commit with the remote GitHub repository and installs
-the latest version via ``pip`` when an update is available.
+Checks for updates by comparing the latest GitHub commit with the locally
+installed commit hash (stored in ``_COMMIT_HASH``).  Installs the latest
+version via ``pip`` when an update is available.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
+import urllib.request
 from pathlib import Path
 
-# GitHub repository for PocketManager
+# GitHub repository details
+_REPO_API = "https://api.github.com/repos/YacineSahli/PocketManager"
 _REPO_URL = "git+https://github.com/YacineSahli/PocketManager.git@master"
 
 
@@ -23,15 +27,56 @@ def _install_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the CompletedProcess."""
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd or _install_root(),
-        capture_output=True,
-        text=True,
-        timeout=60,
+def _read_local_commit() -> str:
+    """Return the installed commit hash from the marker file, or ``""``."""
+    marker = _install_root() / "pocketmanager" / ".commit"
+    try:
+        return marker.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        # Fallback: try git if the install is from a git clone
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=_install_root(),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+
+def _fetch_remote_commit() -> str:
+    """Fetch the latest commit hash on ``master`` from GitHub API."""
+    url = f"{_REPO_API}/commits/master"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PocketManager"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("sha", "")
+    except Exception:
+        return ""
+
+
+def _fetch_commit_log(local_hash: str, remote_hash: str) -> str:
+    """Fetch one-line commit log between two hashes from GitHub API."""
+    url = (
+        f"{_REPO_API}/compare/{local_hash}...{remote_hash}"
     )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PocketManager"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            commits = data.get("commits", [])
+            return "\n".join(
+                f'{c["sha"][:7]} {c["commit"]["message"].splitlines()[0]}'
+                for c in commits
+            )
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -47,45 +92,26 @@ def get_current_version() -> str:
 
 
 def check_for_update() -> dict | None:
-    """Check whether a newer version is available on the remote.
-
-    Runs ``git fetch`` then compares the local ``HEAD`` with
-    ``origin/master``.
+    """Check whether a newer version is available on GitHub.
 
     Returns a dict with ``local`` (current short hash), ``remote`` (remote
     short hash), and ``log`` (one-line log of incoming commits) if updates
     are available, or ``None`` if already up to date (or on failure).
     """
-    root = _install_root()
+    local_hash = _read_local_commit()
+    remote_hash = _fetch_remote_commit()
 
-    fetch = _git("fetch", cwd=root)
-    if fetch.returncode != 0:
+    if not local_hash or not remote_hash:
         return None
-
-    # Compare local HEAD with remote
-    rev = _git("rev-parse", "HEAD", "origin/master", cwd=root)
-    if rev.returncode != 0:
-        return None
-
-    hashes = rev.stdout.strip().splitlines()
-    if len(hashes) < 2:
-        return None
-
-    local_hash, remote_hash = hashes[0], hashes[1]
 
     if local_hash == remote_hash:
         return None
 
-    # Get the short hashes + incoming commit log
-    short = _git("rev-parse", "--short", "HEAD", "origin/master", cwd=root)
-    short_hashes = short.stdout.strip().splitlines() if short.returncode == 0 else (local_hash[:7], remote_hash[:7])
-
-    log = _git("log", "--oneline", f"{local_hash}..{remote_hash}", cwd=root)
-    incoming = log.stdout.strip() if log.returncode == 0 else ""
+    incoming = _fetch_commit_log(local_hash, remote_hash)
 
     return {
-        "local": short_hashes[0] if len(short_hashes) > 0 else local_hash[:7],
-        "remote": short_hashes[1] if len(short_hashes) > 1 else remote_hash[:7],
+        "local": local_hash[:7],
+        "remote": remote_hash[:7],
         "log": incoming,
     }
 
@@ -118,5 +144,14 @@ def perform_update() -> bool:
     if result.returncode != 0:
         print(f"pip install failed: {result.stderr.strip()}")
         return False
+
+    # Write the new commit hash to the marker file
+    new_hash = _fetch_remote_commit()
+    if new_hash:
+        marker = _install_root() / "pocketmanager" / "commit.txt"
+        try:
+            marker.write_text(new_hash + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     return True
