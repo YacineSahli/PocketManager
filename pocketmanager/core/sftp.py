@@ -48,14 +48,20 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_host(host: str, port: int) -> tuple[str, int]:
-    """Resolve *host* to an IPv4 address, skipping unreachable IPv6.
+    """Resolve *host* to an IP address, preferring reachable ones.
 
     Oracle Cloud VPSes often lack IPv6 but DNS returns AAAA records.
     Paramiko tries IPv6 first and fails with "Network is unreachable"
     instead of falling back.  This resolves the hostname ourselves and
-    returns a working ``(ip, port)`` pair.
+    returns the first reachable ``(ip, port)`` pair.
+
+    If no address is reachable, returns the IPv4 address anyway so the
+    actual error (e.g. connection refused) is more useful than "Network
+    is unreachable".
     """
     import socket
+
+    ipv4_addr: str | None = None
 
     for family in (socket.AF_INET, socket.AF_INET6):
         try:
@@ -63,6 +69,9 @@ def _resolve_host(host: str, port: int) -> tuple[str, int]:
             if results:
                 addr = results[0][4]
                 ip: str = addr[0]  # type: ignore[assignment]
+                # Remember the first IPv4 address as fallback
+                if family == socket.AF_INET and ipv4_addr is None:
+                    ipv4_addr = ip
                 # Quick reachability check
                 s = socket.socket(family, socket.SOCK_STREAM)
                 s.settimeout(5)
@@ -76,7 +85,9 @@ def _resolve_host(host: str, port: int) -> tuple[str, int]:
         except socket.gaierror:
             continue
 
-    # Fallback: just return the hostname as-is and let paramiko try
+    # Nothing reachable — prefer IPv4 so the error message is useful
+    if ipv4_addr:
+        return ipv4_addr, port
     return host, port
 
 
