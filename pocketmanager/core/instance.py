@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from pocketmanager.core.config import get, get_config_dir
+from pocketmanager.core.config import get
 from pocketmanager.core.pocketbase import detect_instance_version, ensure_binary, get_latest_version
 from pocketmanager.core.ports import find_available_port, is_port_free
 from pocketmanager.core.state import (

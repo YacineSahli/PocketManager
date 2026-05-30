@@ -47,16 +47,23 @@ A CLI tool and web dashboard to manage multiple PocketBase instances on a single
 
 ## File Paths
 
-PocketManager uses the following paths on your VPS:
+PocketManager separates **configuration** (static settings) from **state** (mutable runtime data):
 
 | Path | Purpose |
 |------|---------|
 | `~/pocketmanager/` | Tool installation directory |
-| `~/pocketmanager/config.json` | Global configuration |
-| `~/pocketmanager/instances.json` | Instance state |
+| `/etc/pocketmanager/config.json` | Global configuration |
+| `/var/lib/pocketmanager/instances.json` | Instance state (registered instances, versions, ports) |
 | `~/.pocketmanager/cache/` | Downloaded PocketBase binaries cache |
 | `~/pocketbases/pocketbase-<name>/` | Instance data directories |
 | `/etc/systemd/system/pocketbase-<name>.service` | Systemd service files |
+
+Both paths can be overridden with environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `POCKETMANAGER_HOME` | `/etc/pocketmanager` | Config directory (`config.json`) |
+| `POCKETMANAGER_STATE_DIR` | `/var/lib/pocketmanager` | State directory (`instances.json`) |
 
 ---
 
@@ -97,7 +104,7 @@ export PATH="$HOME/pocketmanager/.venv/bin:$PATH"
 
 ## Configuration
 
-PocketManager stores its configuration in `~/pocketmanager/config.json`. The full structure with defaults is shown below:
+PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The full structure with defaults is shown below:
 
 ```json
 {

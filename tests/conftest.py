@@ -67,17 +67,20 @@ def _wait_for_health(port: int, timeout: float = 30) -> bool:
 def isolated_env(tmp_path: Path, monkeypatch):
     """Create an isolated PocketManager environment for each test.
 
-    Sets POCKETMANAGER_HOME, creates config.json with temp paths,
-    and returns a dict with all paths.
+    Sets POCKETMANAGER_HOME (config) and POCKETMANAGER_STATE_DIR (state),
+    creates config.json with temp paths, and returns a dict with all paths.
     """
-    home = tmp_path / "pm_home"
+    config_home = tmp_path / "pm_config"
+    state_home = tmp_path / "pm_state"
     base_dir = tmp_path / "instances"
     cache_dir = tmp_path / "cache"
-    home.mkdir()
+    config_home.mkdir()
+    state_home.mkdir()
     base_dir.mkdir()
     cache_dir.mkdir()
 
-    monkeypatch.setenv("POCKETMANAGER_HOME", str(home))
+    monkeypatch.setenv("POCKETMANAGER_HOME", str(config_home))
+    monkeypatch.setenv("POCKETMANAGER_STATE_DIR", str(state_home))
 
     config = {
         "base_dir": str(base_dir),
@@ -102,10 +105,11 @@ def isolated_env(tmp_path: Path, monkeypatch):
             "auto_backups_max_keep": 7,
         },
     }
-    (home / "config.json").write_text(json.dumps(config, indent=2))
+    (config_home / "config.json").write_text(json.dumps(config, indent=2))
 
     return {
-        "home": home,
+        "home": config_home,
+        "state_home": state_home,
         "base_dir": base_dir,
         "cache_dir": cache_dir,
         "config": config,

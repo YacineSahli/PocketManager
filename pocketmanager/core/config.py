@@ -1,10 +1,19 @@
 """Global configuration management for PocketManager.
 
-Config is stored in ``~/.config/pocketmanager/`` (or ``POCKETMANAGER_HOME``).
-Resolution order for the config directory:
+Config is stored in ``/etc/pocketmanager/`` (system-wide, static settings).
+Instance state is stored separately in ``/var/lib/pocketmanager/`` (runtime data).
+
+Resolution order:
+
+Config directory (``get_config_dir()``):
 
 1. ``POCKETMANAGER_HOME`` environment variable
-2. ``~/.config/pocketmanager/``
+2. ``/etc/pocketmanager/``
+
+State directory (``get_state_dir()``):
+
+1. ``POCKETMANAGER_STATE_DIR`` environment variable
+2. ``/var/lib/pocketmanager/``
 """
 
 from __future__ import annotations
@@ -82,13 +91,28 @@ def get_config_dir() -> Path:
     Resolution order:
 
     1. ``POCKETMANAGER_HOME`` environment variable
-    2. ``~/.config/pocketmanager/``
+    2. ``/etc/pocketmanager/``
     """
     env_home = os.environ.get("POCKETMANAGER_HOME")
     if env_home:
         return Path(env_home).resolve()
 
-    return Path.home() / ".config" / "pocketmanager"
+    return Path("/etc/pocketmanager")
+
+
+def get_state_dir() -> Path:
+    """Return the directory for mutable runtime state (``instances.json``).
+
+    Resolution order:
+
+    1. ``POCKETMANAGER_STATE_DIR`` environment variable
+    2. ``/var/lib/pocketmanager/``
+    """
+    env_state = os.environ.get("POCKETMANAGER_STATE_DIR")
+    if env_state:
+        return Path(env_state).resolve()
+
+    return Path("/var/lib/pocketmanager")
 
 
 def get_config_path() -> Path:
