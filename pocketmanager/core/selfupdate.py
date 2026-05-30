@@ -29,7 +29,7 @@ def _install_root() -> Path:
 
 def _read_local_commit() -> str:
     """Return the installed commit hash from the marker file, or ``""``."""
-    marker = _install_root() / "pocketmanager" / ".commit"
+    marker = _install_root() / "pocketmanager" / "commit.txt"
     try:
         return marker.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
