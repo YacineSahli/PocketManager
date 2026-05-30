@@ -14,14 +14,12 @@ error()   { echo -e "${RED}[ERROR]${NC} $*"; }
 step()    { echo -e "\n${BOLD}[$1/$TOTAL_STEPS]${NC} $2"; }
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-REPO_URL="https://github.com/yacinesahli/PocketManager.git"
-INSTALL_DIR="$HOME/pocketmanager"
-VENV_DIR="$INSTALL_DIR/.venv"
+REPO_URL="git+https://github.com/YacineSahli/PocketManager.git@master"
 POCKETBASES_DIR="$HOME/pocketbases"
 CACHE_DIR="$HOME/.pocketmanager/cache"
 CONFIG_DIR="/etc/pocketmanager"
 STATE_DIR="/var/lib/pocketmanager"
-TOTAL_STEPS=9
+TOTAL_STEPS=6
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
 print_banner() {
@@ -54,7 +52,14 @@ check_requirements() {
         fi
     fi
 
-    # git
+    # pip
+    if ! python3 -m pip --version &>/dev/null; then
+        missing+=("python3-pip")
+    else
+        info "pip found"
+    fi
+
+    # git (needed by pip to install from git URL)
     if ! command -v git &>/dev/null; then
         missing+=("git")
     else
@@ -94,30 +99,6 @@ check_requirements() {
         exit 1
     fi
 
-    # python3-venv (required for virtual environment creation)
-    # Actually test venv creation instead of just importing ensurepip,
-    # since ensurepip can be importable but broken (missing bundled wheels).
-    local _test_venv
-    _test_venv=$(mktemp -d)
-    if ! python3 -m venv "$_test_venv" &>/dev/null; then
-        rm -rf "$_test_venv"
-        warn "python3-venv not working, attempting to install..."
-        local py_version
-        py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
-            info "python${py_version}-venv installed successfully."
-        elif sudo apt-get install -y -qq "python3-venv"; then
-            info "python3-venv installed successfully."
-        else
-            error "Failed to install python3-venv."
-            echo -e "  Install it manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
-            exit 1
-        fi
-    else
-        rm -rf "$_test_venv"
-        info "python3-venv found"
-    fi
-
     # Check if running as root
     if [[ "$(id -u)" -eq 0 ]]; then
         warn "Running as root is not recommended."
@@ -128,100 +109,34 @@ check_requirements() {
     info "All requirements met."
 }
 
-# ─── Step 2: Clone or update repo ────────────────────────────────────────────
-clone_or_update_repo() {
-    step 2 "Setting up repository..."
+# ─── Step 2: Install PocketManager via pip ────────────────────────────────────
+install_pm() {
+    step 2 "Installing PocketManager..."
 
-    if [[ -d "$INSTALL_DIR" ]]; then
-        info "Repository exists at ${INSTALL_DIR}, updating..."
-        git -C "$INSTALL_DIR" pull --ff-only
+    # Install for the current user (--user flag)
+    if python3 -m pip install --user --break-system-packages --force-reinstall --no-cache-dir "$REPO_URL"; then
+        info "PocketManager installed successfully."
     else
-        info "Cloning repository to ${INSTALL_DIR}..."
-        git clone "$REPO_URL" "$INSTALL_DIR"
+        error "Failed to install PocketManager via pip."
+        echo -e "  Try manually: ${BOLD}python3 -m pip install --user --break-system-packages $REPO_URL${NC}"
+        exit 1
     fi
 
-    # Re-exec from the cloned repo so we always run the latest version.
-    # _PM_REEXECED prevents infinite loops.
-    local running_script
-    running_script="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null)"
-    local cloned_script
-    cloned_script="$(readlink -f "${INSTALL_DIR}/install.sh" 2>/dev/null || realpath "${INSTALL_DIR}/install.sh" 2>/dev/null)"
-
-    if [[ -n "${_PM_REEXECED:-}" ]]; then
-        info "Repository ready."
-        return
+    # Ensure ~/.local/bin is in PATH
+    local bin_dir="$HOME/.local/bin"
+    if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
+        echo "" >> "$HOME/.bashrc"
+        echo "# Added by PocketManager installer" >> "$HOME/.bashrc"
+        echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$HOME/.bashrc"
+        info "Added ~/.local/bin to PATH in .bashrc"
     fi
 
-    if [[ "$running_script" != "$cloned_script" ]]; then
-        info "Re-launching from cloned repository..."
-        export _PM_REEXECED=1
-        exec bash "$cloned_script" "$@"
-    fi
-
-    info "Repository ready."
+    export PATH="$HOME/.local/bin:$PATH"
 }
 
-# ─── Step 3: Create Python virtual environment ───────────────────────────────
-create_venv() {
-    step 3 "Creating Python virtual environment..."
-
-    if [[ -d "$VENV_DIR" ]]; then
-        warn "Virtual environment already exists, recreating..."
-        rm -rf "$VENV_DIR"
-    fi
-
-    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
-        error "Failed to create virtual environment."
-        warn "Attempting to install python3-venv and retry..."
-        local py_version
-        py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        if sudo apt-get update -qq && sudo apt-get install -y -qq "python${py_version}-venv"; then
-            rm -rf "$VENV_DIR"
-            if ! python3 -m venv "$VENV_DIR"; then
-                error "venv creation still failing after installing python3-venv."
-                error "Please run: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
-                exit 1
-            fi
-        else
-            error "Could not install python3-venv. Attempting fallback with --without-pip..."
-            rm -rf "$VENV_DIR"
-            if python3 -m venv --without-pip "$VENV_DIR"; then
-                # Bootstrap pip manually via get-pip.py
-                local get_pip="/tmp/get-pip.py"
-                if curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$get_pip"; then
-                    "$VENV_DIR/bin/python3" "$get_pip"
-                    rm -f "$get_pip"
-                    info "Virtual environment created (pip bootstrapped via get-pip.py)"
-                    return
-                else
-                    error "Failed to download get-pip.py."
-                    echo -e "  Install python3-venv manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
-                    exit 1
-                fi
-            else
-                error "Could not create virtual environment at all."
-                echo -e "  Install python3-venv manually: ${BOLD}sudo apt-get install -y python${py_version}-venv${NC}"
-                exit 1
-            fi
-        fi
-    else
-        info "Virtual environment created at ${VENV_DIR}"
-    fi
-}
-
-# ─── Step 4: Install dependencies ───────────────────────────────────────────
-install_dependencies() {
-    step 4 "Installing dependencies..."
-
-    "$VENV_DIR/bin/pip" install --upgrade pip
-    "$VENV_DIR/bin/pip" install -e "$INSTALL_DIR/"
-
-    info "Dependencies installed."
-}
-
-# ─── Step 5: Create system user and directories ──────────────────────────────
+# ─── Step 3: Create system user and directories ──────────────────────────────
 setup_user_and_dirs() {
-    step 5 "Creating system user and directories..."
+    step 3 "Creating system user and directories..."
 
     # Create pocketbase system user
     if id pocketbase &>/dev/null; then
@@ -265,18 +180,11 @@ setup_user_and_dirs() {
     else
         info "Directory ${STATE_DIR} already exists."
     fi
-
-    # Migrate instances.json from old config dir if present
-    local old_state="$INSTALL_DIR/instances.json"
-    if [[ -f "$old_state" && ! -f "$STATE_DIR/instances.json" ]]; then
-        mv "$old_state" "$STATE_DIR/instances.json"
-        info "Migrated instances.json to ${STATE_DIR}"
-    fi
 }
 
-# ─── Step 6: Migrate existing instances ──────────────────────────────────────
+# ─── Step 4: Migrate existing instances ──────────────────────────────────────
 migrate_existing() {
-    step 6 "Checking for existing PocketBase instances..."
+    step 4 "Checking for existing PocketBase instances..."
 
     local existing
     existing=$(find "$POCKETBASES_DIR" -maxdepth 1 -type d -name "pocketbase-*" 2>/dev/null || true)
@@ -303,7 +211,6 @@ migrate_existing() {
     answer="${answer:-Y}"
 
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-        export PATH="$VENV_DIR/bin:$PATH"
         pm migrate-existing
         info "Migration complete."
     else
@@ -311,32 +218,9 @@ migrate_existing() {
     fi
 }
 
-# ─── Step 7: Add to PATH ────────────────────────────────────────────────────
-add_to_path() {
-    step 7 "Configuring PATH..."
-
-    # Create symlink so `pm` is available everywhere (cron, systemd, scripts)
-    sudo ln -sf "$VENV_DIR/bin/pm" /usr/local/bin/pm
-    info "Created symlink: /usr/local/bin/pm -> ${VENV_DIR}/bin/pm"
-
-    # Remove legacy bashrc PATH entry (no longer needed with symlink)
-    local bashrc="$HOME/.bashrc"
-    if grep -qF 'pocketmanager/.venv/bin' "$bashrc" 2>/dev/null; then
-        sed -i '/pocketmanager\/.venv\/bin/d' "$bashrc"
-        sed -i '/# Added by PocketManager installer/d' "$bashrc"
-        info "Removed legacy PATH entry from ${bashrc}."
-    fi
-
-    # Remove legacy POCKETMANAGER_HOME from bashrc
-    if grep -qF 'POCKETMANAGER_HOME' "$bashrc" 2>/dev/null; then
-        sed -i '/POCKETMANAGER_HOME/d' "$bashrc"
-        info "Removed legacy POCKETMANAGER_HOME from ${bashrc}."
-    fi
-}
-
-# ─── Step 8: Configure Pangolin (interactive) ────────────────────────────────
+# ─── Step 5: Configure Pangolin (interactive) ────────────────────────────────
 setup_pangolin() {
-    step 8 "Pangolin reverse-proxy setup"
+    step 5 "Pangolin reverse-proxy setup"
 
     local config_file="$CONFIG_DIR/config.json"
 
@@ -413,8 +297,6 @@ setup_pangolin() {
     fi
 
     # Write values via pm config set
-    export PATH="$VENV_DIR/bin:$PATH"
-
     pm config set pangolin.api_key "$api_key" 2>/dev/null && \
     pm config set pangolin.org_id "$org_id" 2>/dev/null && \
     pm config set pangolin.default_domain_id "$domain_id" 2>/dev/null && \
@@ -427,22 +309,21 @@ setup_pangolin() {
     fi
 }
 
-# ─── Step 9: Print success ──────────────────────────────────────────────────
+# ─── Step 6: Print success ──────────────────────────────────────────────────
 print_success() {
-    step 9 "Done!"
+    step 6 "Done!"
 
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║          PocketManager installed successfully!    ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  Installation path: ${BOLD}${INSTALL_DIR}${NC}"
-    echo ""
     echo -e "  ${BOLD}Quick start:${NC}"
     echo -e "    pm --help              Show all commands"
-    echo -e "    pm list                List PocketBase instances"
+    echo -e "    pm ls                  List PocketBase instances"
     echo -e "    pm create myapp        Create a new instance"
     echo -e "    pm dashboard           Launch the web dashboard"
+    echo -e "    pm self-update         Update to the latest version"
     echo ""
 
     # Check if Pangolin is configured
@@ -484,12 +365,9 @@ print_success() {
 main() {
     print_banner
     check_requirements
-    clone_or_update_repo
-    create_venv
-    install_dependencies
+    install_pm
     setup_user_and_dirs
     migrate_existing
-    add_to_path
     setup_pangolin
     print_success
 }
