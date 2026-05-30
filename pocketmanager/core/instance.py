@@ -580,7 +580,11 @@ def update_instance(name: str, version: str | None = None) -> dict:
     set_capabilities(str(binary_path))
 
     # 7. Start service
-    start_service(name)
+    if not start_service(name):
+        raise RuntimeError(
+            f"Failed to start instance '{name}' after update. "
+            f"Check service logs: journalctl -u pocketbase-{name}.service -n 50"
+        )
 
     # 8. Update state
     state_update_instance(name, {"version": version})
