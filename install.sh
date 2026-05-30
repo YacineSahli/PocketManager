@@ -19,6 +19,8 @@ INSTALL_DIR="$HOME/pocketmanager"
 VENV_DIR="$INSTALL_DIR/.venv"
 POCKETBASES_DIR="/home/ubuntu/pocketbases"
 CACHE_DIR="/home/ubuntu/.pocketmanager/cache"
+CONFIG_DIR="/etc/pocketmanager"
+STATE_DIR="/var/lib/pocketmanager"
 TOTAL_STEPS=9
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
@@ -245,6 +247,31 @@ setup_user_and_dirs() {
     else
         info "Directory ${CACHE_DIR} already exists."
     fi
+
+    # Create config directory (/etc/pocketmanager)
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        sudo mkdir -p "$CONFIG_DIR"
+        sudo chown "$(id -un):$(id -gn)" "$CONFIG_DIR"
+        info "Created ${CONFIG_DIR}"
+    else
+        info "Directory ${CONFIG_DIR} already exists."
+    fi
+
+    # Create state directory (/var/lib/pocketmanager)
+    if [[ ! -d "$STATE_DIR" ]]; then
+        sudo mkdir -p "$STATE_DIR"
+        sudo chown "$(id -un):$(id -gn)" "$STATE_DIR"
+        info "Created ${STATE_DIR}"
+    else
+        info "Directory ${STATE_DIR} already exists."
+    fi
+
+    # Migrate instances.json from old config dir if present
+    local old_state="$INSTALL_DIR/instances.json"
+    if [[ -f "$old_state" && ! -f "$STATE_DIR/instances.json" ]]; then
+        mv "$old_state" "$STATE_DIR/instances.json"
+        info "Migrated instances.json to ${STATE_DIR}"
+    fi
 }
 
 # ─── Step 6: Migrate existing instances ──────────────────────────────────────
@@ -300,6 +327,12 @@ add_to_path() {
         info "Added PATH entry to ${bashrc}."
     fi
 
+    # Remove legacy POCKETMANAGER_HOME from bashrc (no longer needed)
+    if grep -qF 'POCKETMANAGER_HOME' "$bashrc" 2>/dev/null; then
+        sed -i '/POCKETMANAGER_HOME/d' "$bashrc"
+        info "Removed legacy POCKETMANAGER_HOME from ${bashrc}."
+    fi
+
     # Create symlink
     sudo ln -sf "$VENV_DIR/bin/pm" /usr/local/bin/pm
     info "Created symlink: /usr/local/bin/pm -> ${VENV_DIR}/bin/pm"
@@ -309,7 +342,7 @@ add_to_path() {
 setup_pangolin() {
     step 8 "Pangolin reverse-proxy setup"
 
-    local config_file="$INSTALL_DIR/config.json"
+    local config_file="$CONFIG_DIR/config.json"
 
     # Check if Pangolin is already configured
     if [[ -f "$config_file" ]]; then
@@ -418,12 +451,12 @@ print_success() {
 
     # Check if Pangolin is configured
     local pangolin_ready="no"
-    if [[ -f "$INSTALL_DIR/config.json" ]]; then
+    if [[ -f "$CONFIG_DIR/config.json" ]]; then
         local _pk _po _pd _ps
-        _pk=$(jq -r '.pangolin.api_key // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
-        _po=$(jq -r '.pangolin.org_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
-        _pd=$(jq -r '.pangolin.default_domain_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
-        _ps=$(jq -r '.pangolin.site_id // ""' "$INSTALL_DIR/config.json" 2>/dev/null)
+        _pk=$(jq -r '.pangolin.api_key // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
+        _po=$(jq -r '.pangolin.org_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
+        _pd=$(jq -r '.pangolin.default_domain_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
+        _ps=$(jq -r '.pangolin.site_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
         if [[ -n "$_pk" && -n "$_po" && -n "$_pd" && -n "$_ps" ]]; then
             pangolin_ready="yes"
         fi

@@ -1,7 +1,7 @@
 """Instance state management for PocketManager.
 
-State is stored in ``instances.json`` in the same directory as
-``config.json`` (see :func:`pocketmanager.core.config.get_config_dir`).
+State is stored in ``instances.json`` in the state directory
+(see :func:`pocketmanager.core.config.get_state_dir`).
 
 All functions follow a **load → modify → save** pattern and are side-effect
 free with respect to the caller's data (we deep-copy before mutating).
@@ -12,13 +12,14 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pocketmanager.core.config import get_config_dir
+from pocketmanager.core.config import get_config_dir, get_state_dir
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ def _fix_file_ownership(path: Path) -> None:
 @contextmanager
 def _state_lock():
     """Exclusive file lock to prevent concurrent state file writes."""
-    lock_path = get_config_dir() / "instances.json.lock"
+    lock_path = get_state_dir() / "instances.json.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
     try:
@@ -69,6 +70,41 @@ def _state_lock():
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 
+
+# ---------------------------------------------------------------------------
+# Migration
+# ---------------------------------------------------------------------------
+
+
+def _migrate_from_config_dir() -> None:
+    """Move instances.json from config dir to state dir (one-time migration).
+
+    In earlier versions, state lived alongside config in ``POCKETMANAGER_HOME``
+    or ``~/.config/pocketmanager/``.  This moves it to the dedicated state
+    directory on first access.
+    """
+    state_path = get_state_dir() / "instances.json"
+    if state_path.is_file():
+        return  # Already migrated or new install
+
+    config_dir = get_config_dir()
+    old_state = config_dir / "instances.json"
+    if not old_state.is_file():
+        return  # Nothing to migrate
+
+    # Ensure target directory exists
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old_state), str(state_path))
+
+    # Also move the lock file if it exists
+    old_lock = config_dir / "instances.json.lock"
+    if old_lock.is_file():
+        try:
+            shutil.move(str(old_lock), str(get_state_dir() / "instances.json.lock"))
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -76,7 +112,8 @@ def _state_lock():
 
 def get_state_path() -> Path:
     """Return the path to ``instances.json``."""
-    return get_config_dir() / "instances.json"
+    _migrate_from_config_dir()
+    return get_state_dir() / "instances.json"
 
 
 def load_state() -> dict[str, Any]:
