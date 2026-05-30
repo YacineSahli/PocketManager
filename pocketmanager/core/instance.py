@@ -129,7 +129,7 @@ def _create_superadmin(binary_path: str) -> tuple[str, str] | None:
 
     try:
         result = subprocess.run(
-            [binary_path, "superuser", "upsert", email, password, "--dir", pb_data_dir],
+            ["sudo", "-u", "pocketbase", binary_path, "superuser", "upsert", email, password, "--dir", pb_data_dir],
             capture_output=True,
             text=True,
             timeout=10,
