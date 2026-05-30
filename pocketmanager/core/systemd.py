@@ -402,21 +402,24 @@ def start_service(name: str) -> bool:
         return False
 
 
-def stop_service(name: str) -> bool:
+def stop_service(name: str) -> None:
     """Stop the systemd service for *name*.
 
-    Returns ``True`` if the service stopped successfully (exit code 0).
+    Raises
+    ------
+    RuntimeError
+        If the service fails to stop.
     """
     service_name = get_service_name(name)
-    try:
-        subprocess.run(
-            ["sudo", "systemctl", "stop", service_name],
-            check=True,
-            capture_output=True,
+    result = subprocess.run(
+        ["sudo", "systemctl", "stop", service_name],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to stop service '{service_name}': {result.stderr.strip() or 'unknown error'}"
         )
-        return True
-    except subprocess.CalledProcessError:
-        return False
 
 
 def restart_service(name: str) -> bool:

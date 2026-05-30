@@ -116,10 +116,10 @@ def stop_instance(name):
     from pocketmanager.core.instance import stop_instance
 
     try:
-        result = stop_instance(name)
-        return jsonify({"success": result})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        stop_instance(name)
+        return jsonify({"success": True})
+    except (ValueError, RuntimeError) as e:
+        return jsonify({"error": str(e)}), 404 if isinstance(e, ValueError) else 500
 
 
 # POST /api/instances/<name>/restart

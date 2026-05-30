@@ -108,11 +108,12 @@ def _get_disk_usage(path: Path) -> str:
         return "unknown"
 
 
-def _create_superadmin(port: int) -> tuple[str, str] | None:
+def _create_superadmin(port: int, binary_path: str) -> tuple[str, str] | None:
     """Attempt to create the first superadmin on a fresh PocketBase instance.
 
     Generates random credentials and creates the admin via the PocketBase
-    REST API.  No authentication is required for the *first* admin creation.
+    CLI ``superuser upsert`` command, which works without authentication on
+    all supported versions (including >= 0.23 where the REST API returns 403).
 
     Returns ``(email, password)`` on success, or ``None`` on failure.
     """
@@ -120,43 +121,32 @@ def _create_superadmin(port: int) -> tuple[str, str] | None:
     import string
     import time
 
-    import requests as _requests
-
     email = "admin@pocketbase.local"
     alphabet = string.ascii_letters + string.digits
     password = "".join(secrets.choice(alphabet) for _ in range(24))
 
-    base_url = f"http://localhost:{port}"
+    # Derive pb_data directory from binary_path (binary lives inside instance dir)
+    pb_data_dir = str(Path(binary_path).resolve().parent / "pb_data")
 
     # Wait for the instance to respond (up to ~30 s)
     for _ in range(15):
-        try:
-            resp = _requests.get(f"{base_url}/api/health", timeout=2)
-            if resp.status_code == 200:
-                break
-        except Exception:
-            pass
+        if _health_check(port):
+            break
         time.sleep(2)
     else:
         return None
 
-    payload = {
-        "email": email,
-        "password": password,
-        "passwordConfirm": password,
-    }
-
-    # Try v0.23+ endpoint first, then legacy
-    for endpoint in (
-        f"{base_url}/api/collections/_superusers/records",
-        f"{base_url}/api/admins",
-    ):
-        try:
-            resp = _requests.post(endpoint, json=payload, timeout=10)
-            if resp.ok:
-                return email, password
-        except Exception:
-            continue
+    try:
+        result = subprocess.run(
+            [binary_path, "superuser", "upsert", email, password, "--dir", pb_data_dir],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return email, password
+    except Exception:
+        pass
 
     return None
 
@@ -261,7 +251,7 @@ def create_instance(
     admin_password: str | None = None
     admin_warning: str | None = None
     try:
-        creds = _create_superadmin(port)
+        creds = _create_superadmin(port, str(binary_path))
         if creds:
             admin_email, admin_password = creds
         else:
@@ -498,16 +488,17 @@ def start_instance(name: str) -> bool:
     return start_service(name)
 
 
-def stop_instance(name: str) -> bool:
+def stop_instance(name: str) -> None:
     """Stop the systemd service for *name*.
 
     Raises:
         ValueError: If the instance is not found.
+        RuntimeError: If the service fails to stop.
     """
     instance = state_get_instance(name)
     if instance is None:
         raise ValueError(f"Instance '{name}' not found.")
-    return stop_service(name)
+    stop_service(name)
 
 
 def restart_instance(name: str) -> bool:

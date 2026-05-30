@@ -33,3 +33,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local task tracking
+todo.md

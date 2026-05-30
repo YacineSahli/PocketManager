@@ -350,8 +350,7 @@ def test_instance_start_stop_restart(isolated_env, pocketbase_binary):
         mocks[7].assert_called_once_with("svc-test")
 
         # -- Stop --
-        stopped = instance_mod.stop_instance("svc-test")
-        assert stopped is True
+        instance_mod.stop_instance("svc-test")  # returns None on success
         mocks[8].assert_called_once_with("svc-test")
 
         # -- Restart --
