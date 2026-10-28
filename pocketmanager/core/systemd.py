@@ -237,6 +237,7 @@ def modify_service(
     port: int | None = None,
     env_set: dict[str, str] | None = None,
     env_unset: list[str] | None = None,
+    bind_host: str | None = None,
 ) -> Path:
     """Modify an existing systemd service file for *name*.
 
@@ -254,6 +255,11 @@ def modify_service(
         Environment variables to add or update (``{KEY: VALUE}``).
     env_unset:
         Environment variable keys to remove.
+    bind_host:
+        Address PocketBase binds to.  ``None`` uses the configured
+        ``bind_host`` from config.json — the unit is always regenerated
+        with the *configured* value so ``pm modify`` never silently
+        changes the bind address away from (or back to) a default.
 
     Returns
     -------
@@ -322,11 +328,17 @@ def modify_service(
         effective_env.update(env_set)
 
     # --- Regenerate and write ---
+    if bind_host is None:
+        from pocketmanager.core.config import get as cfg_get
+
+        bind_host = str(cfg_get("bind_host", "127.0.0.1"))
+
     new_content = generate_service_content(
         name=name,
         port=effective_port,
         working_dir=current_working_dir,
         env=effective_env if effective_env else None,
+        bind_host=bind_host,
     )
 
     subprocess.run(
@@ -558,6 +570,39 @@ def get_status(name: str) -> dict:
     }
 
 
+def get_journal_logs_ex(
+    name: str,
+    lines: int = 100,
+    follow: bool = False,
+) -> tuple[str, str, int]:
+    """Fetch journal logs plus stderr and the journalctl exit code.
+
+    Returns ``(stdout, stderr, returncode)`` so callers can distinguish
+    "no logs yet" from "journal not readable" (permission denied etc.),
+    which plain :func:`get_journal_logs` hides.
+    """
+    service_name = get_service_name(name)
+    cmd: list[str] = [
+        "journalctl",
+        "-u", service_name,
+        "-n", str(lines),
+        "--no-pager",
+    ]
+    if follow:
+        cmd.append("-f")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout, result.stderr, result.returncode
+    except Exception as exc:
+        return "", str(exc), 1
+
+
 def get_journal_logs(
     name: str,
     lines: int = 100,
@@ -580,26 +625,7 @@ def get_journal_logs(
     str
         The journal output.
     """
-    service_name = get_service_name(name)
-    cmd: list[str] = [
-        "journalctl",
-        "-u", service_name,
-        "-n", str(lines),
-        "--no-pager",
-    ]
-    if follow:
-        cmd.append("-f")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.stdout
-    except Exception:
-        return ""
+    return get_journal_logs_ex(name, lines=lines, follow=follow)[0]
 
 
 # ---------------------------------------------------------------------------

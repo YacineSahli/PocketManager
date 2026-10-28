@@ -161,6 +161,9 @@ def test_create_instance_missing_name_returns_400(client):
 
 def test_logs_lines_param_capped(client):
     """lines is clamped, so journalctl can't be asked for the whole journal."""
+    from pocketmanager.core import state as state_mod
+
+    state_mod.add_instance({"name": "myapp", "port": 8090})
     with patch.object(
         systemd_mod, "get_journal_logs", MagicMock(return_value="...")
     ) as logs:
@@ -169,6 +172,13 @@ def test_logs_lines_param_capped(client):
         )
         assert resp.status_code == 200
         assert logs.call_args.kwargs.get("lines") <= 1000
+
+
+def test_logs_unknown_instance_returns_404(client):
+    """Logs for an unregistered instance must 404, not 200-empty."""
+    resp = client.get("/api/instances/nope/logs", headers=_auth())
+    assert resp.status_code == 404
+    assert resp.json == {"error": "Unknown instance"}
 
 
 def test_security_headers_on_index(client):

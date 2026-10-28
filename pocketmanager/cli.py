@@ -177,6 +177,14 @@ def create(
     """Create a new PocketBase instance."""
     from pocketmanager.core import instance as instance_mod
 
+    # Validate the name up front — after the interactive prompts is too late
+    # to discover a typo or duplicate cheaply.
+    try:
+        instance_mod._validate_name(name)
+    except ValueError as exc:
+        console.print(f"[bold red]Error: {exc}[/bold red]")
+        sys.exit(1)
+
     # Interactive mode: no options provided
     interactive = port is None and domain is None and not env and pb_version is None
 
@@ -199,7 +207,11 @@ def create(
         except Exception:
             suggested_port = 8090
 
-        port = click.prompt("HTTP port", type=int, default=suggested_port)
+        while True:
+            port = click.prompt("HTTP port", type=int, default=suggested_port)
+            if 1 <= port <= 65535:
+                break
+            console.print("[bold yellow]Port must be between 1 and 65535.[/bold yellow]")
         domain_str: str = click.prompt("Domain (leave blank for none)", type=str, default="")
         domain = domain_str.strip() or None
         if click.confirm("Add environment variables?", default=False):
@@ -290,6 +302,18 @@ def create(
             )
         )
 
+    # Show warning if the automatic backup schedule could not be enabled
+    backup_warning = result.get("backup_warning") if result else None
+    if backup_warning:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold yellow]Automatic backups not enabled.[/bold yellow]\n\n{backup_warning}",
+                title="[bold yellow]⚠ Backups[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
 
 # ---------------------------------------------------------------------------
 # list / ls
@@ -321,35 +345,43 @@ def list_instances_cmd() -> None:
     table.add_column("SFTP Backup", justify="center")
     table.add_column("Dashboard URL", style="green", min_width=20, ratio=2)
 
-    for inst in instances:
+    def _local_backup_label(inst: dict) -> str:
+        """Local-backup column: query PB's real cron when reachable."""
+        fallback = (
+            "[bold green]on[/bold green]"
+            if inst.get("auto_backup", False)
+            else "[dim]off[/dim]"
+        )
+        if not inst.get("active", False):
+            return fallback
+        try:
+            from pocketmanager.core.backup import (
+                get_backup_cron_status,
+                get_instance_auth_token,
+            )
+
+            token = get_instance_auth_token(inst.get("name", ""))
+            cron_status = get_backup_cron_status(
+                f"http://127.0.0.1:{inst.get('port', 8090)}",
+                auth_token=token,
+            )
+            if cron_status["enabled"]:
+                return "[bold green]on[/bold green]"
+        except Exception:
+            pass
+        return fallback
+
+    # Probe instances concurrently — one hung instance must not stall `pm ls`
+    # (each probe can take up to ~15s sequentially).
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, len(instances))) as pool:
+        local_labels = list(pool.map(_local_backup_label, instances))
+
+    for inst, local_label in zip(instances, local_labels):
         active = inst.get("active", False)
         url = _build_url(inst)
         dashboard_url = f"{url}/_/" if url != "(unknown)" else "—"
-
-        # Local backup status — query PocketBase's actual cron setting
-        # (requires superuser auth; falls back to the PM-side flag when the
-        # instance has no stored credentials or is unreachable)
-        local_label = "[dim]off[/dim]"
-        if inst.get("active", False):
-            try:
-                from pocketmanager.core.backup import (
-                    get_backup_cron_status,
-                    get_instance_auth_token,
-                )
-
-                token = get_instance_auth_token(inst.get("name", ""))
-                cron_status = get_backup_cron_status(
-                    f"http://127.0.0.1:{inst.get('port', 8090)}",
-                    auth_token=token,
-                )
-                if cron_status["enabled"]:
-                    local_label = "[bold green]on[/bold green]"
-            except Exception:
-                # Fallback to PM flag if PB is unreachable
-                if inst.get("auto_backup", False):
-                    local_label = "[bold green]on[/bold green]"
-        elif inst.get("auto_backup", False):
-            local_label = "[bold green]on[/bold green]"
 
         # SFTP backup status (global)
         if sftp_active:
@@ -447,6 +479,13 @@ def restart(name: str) -> None:
 @click.argument("name", type=INSTANCE_NAME)
 @click.option("-p", "--port", type=int, default=None, help="New HTTP port for the instance.")
 @click.option(
+    "-d",
+    "--domain",
+    default=None,
+    help="Set the full public domain (e.g. myapp.apps.example.com) and create "
+    "the Pangolin resource for this instance.",
+)
+@click.option(
     "-e",
     "--env",
     multiple=True,
@@ -466,6 +505,7 @@ def restart(name: str) -> None:
 def modify(
     name: str,
     port: int | None,
+    domain: str | None,
     env: tuple[str, ...],
     rm_env: tuple[str, ...],
     do_restart: bool,
@@ -479,6 +519,7 @@ def modify(
       pm modify myapp -p 8091                   Change the port
       pm modify myapp -p 8091 -e FOO=bar        Change port + add env
       pm modify myapp --no-restart -e A=b       Modify without restarting
+      pm modify myapp -d pb.example.com         Set domain + Pangolin resource
 
     When no modification flags are given, prints the current service file.
     """
@@ -490,7 +531,7 @@ def modify(
     )
 
     # No modification flags: just show the current service file
-    if port is None and not env and not rm_env:
+    if port is None and domain is None and not env and not rm_env:
         service_path = get_service_path(name)
         if not service_path.is_file():
             console.print(
@@ -519,21 +560,23 @@ def modify(
 
     rm_env_list = list(rm_env)
 
-    # Apply changes
-    console.print(f"[bold]Modifying service for '{name}'...[/bold]")
-    try:
-        modify_service(
-            name=name,
-            port=port,
-            env_set=env_dict or None,
-            env_unset=rm_env_list or None,
-        )
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Error: {exc}[/bold red]")
-        sys.exit(1)
-    except (ValueError, RuntimeError) as exc:
-        console.print(f"[bold red]Error: {exc}[/bold red]")
-        sys.exit(1)
+    # Apply service changes
+    service_changed = port is not None or bool(env_dict) or bool(rm_env_list)
+    if service_changed:
+        console.print(f"[bold]Modifying service for '{name}'...[/bold]")
+        try:
+            modify_service(
+                name=name,
+                port=port,
+                env_set=env_dict or None,
+                env_unset=rm_env_list or None,
+            )
+        except FileNotFoundError as exc:
+            console.print(f"[bold red]Error: {exc}[/bold red]")
+            sys.exit(1)
+        except (ValueError, RuntimeError) as exc:
+            console.print(f"[bold red]Error: {exc}[/bold red]")
+            sys.exit(1)
 
     # Update persisted instance state so port/env stay in sync
     state_updates: dict = {}
@@ -557,9 +600,14 @@ def modify(
     for k in rm_env_list:
         changes.append(f"env –{k}")
 
-    console.print(f"[bold green]Service modified:[/bold green] {', '.join(changes)}")
+    if service_changed:
+        console.print(f"[bold green]Service modified:[/bold green] {', '.join(changes)}")
 
-    if do_restart:
+    # Domain / Pangolin attach
+    if domain is not None:
+        _modify_domain(name, instance, domain)
+
+    if service_changed and do_restart:
         console.print("[dim]Restarting service to apply changes...[/dim]")
         if restart_service(name):
             console.print(f"[bold green]Instance '{name}' restarted.[/bold green]")
@@ -568,12 +616,93 @@ def modify(
                 f"[bold yellow]Warning: Failed to restart '{name}'. "
                 f"Apply changes manually with: pm restart {name}[/bold yellow]"
             )
-    else:
+    elif service_changed:
         console.print(
             "[dim]Changes written. Restart to apply: pm restart {name}[/dim]".format(
                 name=name
             )
         )
+
+
+def _modify_domain(name: str, instance: dict, domain: str) -> None:
+    """Set the public domain for *name*, creating the Pangolin resource."""
+    from pocketmanager.core.config import get as cfg_get
+    from pocketmanager.core.state import update_instance
+
+    domain = domain.strip()
+    if not domain:
+        console.print("[bold red]Error: Domain cannot be empty.[/bold red]")
+        sys.exit(1)
+
+    existing_resource = instance.get("pangolin_resource_id")
+    if existing_resource:
+        console.print(
+            "[bold yellow]Note: instance already has a Pangolin resource — "
+            "the new domain was recorded in state, but the resource itself "
+            "must be updated in the Pangolin dashboard.[/bold yellow]"
+        )
+        update_instance(name, {"domain": domain})
+        console.print(f"[bold green]Domain updated: https://{domain}[/bold green]")
+        return
+
+    required = {
+        "pangolin.api_url": cfg_get("pangolin.api_url", ""),
+        "pangolin.api_key": cfg_get("pangolin.api_key", ""),
+        "pangolin.org_id": cfg_get("pangolin.org_id", ""),
+        "pangolin.default_domain_id": cfg_get("pangolin.default_domain_id", ""),
+       }
+    missing = [key for key, val in required.items() if not val]
+    if missing:
+        console.print(
+            "[bold red]Error: Pangolin is not fully configured — cannot create "
+            "a resource for the domain.[/bold red]\n"
+            f"[dim]Missing: {', '.join(missing)}\n"
+            f"Configure Pangolin, then re-run: pm modify {name} -d {domain}[/dim]"
+        )
+        sys.exit(1)
+
+    # Derive the subdomain the same way `pm create` does.
+    default_domain = cfg_get("pangolin.default_domain", "")
+    if default_domain and domain.endswith(f".{default_domain}"):
+        subdomain = domain[: -(len(default_domain) + 1)]
+    else:
+        subdomain = domain
+
+    site_id_raw = cfg_get("pangolin.site_id", "")
+    site_id = int(site_id_raw) if site_id_raw else 0
+
+    from pocketmanager.core.pangolin import (
+        PangolinAPIError,
+        PangolinConfigError,
+        create_resource,
+    )
+
+    console.print(f"[bold]Creating Pangolin resource for https://{domain}...[/bold]")
+    try:
+        result = create_resource(
+            name=name,
+            subdomain=subdomain,
+            domain_id=required["pangolin.default_domain_id"],
+            org_id=required["pangolin.org_id"],
+            site_id=site_id,
+            target_ip=cfg_get("pangolin.target_ip", "127.0.0.1"),
+            target_port=instance.get("port"),
+        )
+    except (PangolinConfigError, PangolinAPIError) as exc:
+        console.print(f"[bold red]Pangolin resource creation failed: {exc}[/bold red]")
+        console.print(
+            f"[dim]The domain was NOT saved. Fix Pangolin and re-run: "
+            f"pm modify {name} -d {domain}[/dim]"
+        )
+        sys.exit(1)
+
+    resource_id = result.get("resourceId")
+    update_instance(name, {"domain": domain, "pangolin_resource_id": resource_id})
+    console.print(f"[bold green]Domain set and Pangolin resource created: https://{domain}[/bold green]")
+    console.print(
+        "[dim]Note: Pangolin enables SSO authentication on new resources — "
+        f"open it publicly with: pm auth {name} --no-password[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +758,7 @@ def remove(name: str, keep_data: bool, force: bool) -> None:
     console.print(f"\n[bold]Removing instance '{name}'...[/bold]")
     console.print("  [dim]→ Stopping service...[/dim]")
     try:
-        instance_mod.remove_instance(name, keep_data=keep_data)
+        removed = instance_mod.remove_instance(name, keep_data=keep_data)
     except (ValueError, RuntimeError) as exc:
         console.print(f"[bold red]Error: {exc}[/bold red]")
         sys.exit(1)
@@ -642,6 +771,11 @@ def remove(name: str, keep_data: bool, force: bool) -> None:
     console.print("  [dim]→ Updating state...[/dim]")
 
     console.print(f"\n[bold green]Instance '{name}' removed successfully.[/bold green]")
+
+    # Surface cleanup steps that failed — a surviving unit file or a live
+    # Pangolin resource is exactly the kind of leftover users need to know about.
+    for warning in removed.get("_warnings", []):
+        console.print(f"[bold yellow]Warning: {warning}[/bold yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -717,11 +851,24 @@ def logs(name: str, lines: int, follow: bool) -> None:
             console.print(f"[bold red]Error: Could not exec journalctl: {exc}[/bold red]")
             sys.exit(1)
     else:
-        from pocketmanager.core.systemd import get_journal_logs
+        from pocketmanager.core.systemd import get_journal_logs_ex
 
-        output = get_journal_logs(name, lines=lines, follow=False)
+        output, stderr, returncode = get_journal_logs_ex(name, lines=lines, follow=False)
         if output:
             console.print(output.rstrip(), highlight=False)
+        elif stderr.strip() or returncode != 0:
+            # journalctl failed (e.g. permissions) — show why instead of a
+            # misleading "No logs found".
+            console.print(
+                f"[bold red]Error reading logs for '{name}':[/bold red] "
+                f"{stderr.strip() or f'journalctl exited with {returncode}'}"
+            )
+            console.print(
+                "[dim]If this is a journal permission error, add yourself to "
+                "the systemd-journal group: sudo usermod -aG systemd-journal $USER "
+                "(then log out and back in).[/dim]"
+            )
+            sys.exit(1)
         else:
             console.print(f"[dim]No logs found for '{name}'.[/dim]")
 
@@ -781,6 +928,8 @@ def healthcheck_cmd() -> None:
             f"\n[bold yellow]{healthy_count} of {total} instance(s) healthy, "
             f"{unhealthy} have issues.[/bold yellow]"
         )
+        # Non-zero exit so scripts and monitors can trust `pm healthcheck`.
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -816,9 +965,11 @@ def backup(name: str, download: bool, backup_name: str | None, push_remote: bool
     if token is None:
         sys.exit(1)
 
-    success = backup_mod.create_backup(instance_url, name=backup_name, auth_token=token)
+    success, reason = backup_mod.create_backup_ex(instance_url, name=backup_name, auth_token=token)
     if not success:
-        console.print(f"[bold red]Error: Failed to create backup for '{name}'.[/bold red]")
+        console.print(
+            f"[bold red]Error: Failed to create backup for '{name}': {reason}[/bold red]"
+        )
         sys.exit(1)
 
     console.print(f"[bold green]Backup created successfully for '{name}'.[/bold green]")
@@ -926,7 +1077,9 @@ def backups(name: str, remote: bool) -> None:
 @cli.command()
 @click.argument("name", type=INSTANCE_NAME)
 @click.argument("backup_key")
-def restore(name: str, backup_key: str) -> None:
+@click.option("--yes", "assume_yes", is_flag=True, default=False,
+              help="Skip the confirmation prompt (non-interactive use).")
+def restore(name: str, backup_key: str, assume_yes: bool) -> None:
     """Restore a PocketBase instance from a backup."""
     from pocketmanager.core import backup as backup_mod
     from pocketmanager.core.state import get_instance
@@ -942,7 +1095,7 @@ def restore(name: str, backup_key: str) -> None:
         sys.exit(1)
 
     # Double confirmation
-    if not click.confirm(
+    if not assume_yes and not click.confirm(
         f"This will restore from backup '{backup_key}'. Current data will be replaced. Continue?",
         default=False,
     ):
@@ -957,9 +1110,12 @@ def restore(name: str, backup_key: str) -> None:
         sys.exit(1)
 
     console.print(f"[bold]Restoring '{name}' from backup '{backup_key}'...[/bold]")
-    success = backup_mod.restore_backup(instance_url, backup_key, auth_token=token)
+    success, reason = backup_mod.restore_backup_ex(instance_url, backup_key, auth_token=token)
     if not success:
-        console.print(f"[bold red]Error: Failed to restore backup '{backup_key}' for '{name}'.[/bold red]")
+        console.print(
+            f"[bold red]Error: Failed to restore backup '{backup_key}' for '{name}': "
+            f"{reason}[/bold red]"
+        )
         sys.exit(1)
 
     console.print(f"[bold green]Backup '{backup_key}' restored successfully for '{name}'.[/bold green]")
@@ -1256,8 +1412,9 @@ def sftp_config(
     save_config(config)
     console.print("[bold green]SFTP configuration saved.[/bold green]")
 
-    # Optionally test
-    if effective.get("host"):
+    # Optionally test — only when running interactively; a piped/scripted
+    # invocation must not block on a prompt.
+    if effective.get("host") and sys.stdin.isatty():
         if click.confirm("Test connection now?", default=True):
             from pocketmanager.core.sftp import test_connection
 
@@ -1611,10 +1768,13 @@ def backup_all(push_remote: bool) -> None:
     if push_remote:
         table.add_column("SFTP", justify="center")
 
+    failures = 0
+
     for inst in instances:
         inst_name = inst.get("name", "")
         port = inst.get("port")
         if not port:
+            failures += 1
             row = [inst_name, "-", "[bold red]no port[/bold red]"]
             if push_remote:
                 row.append("-")
@@ -1625,6 +1785,7 @@ def backup_all(push_remote: bool) -> None:
         token = _require_backup_auth(inst_name, inst)
 
         if token is None:
+            failures += 1
             row = [inst_name, "-", "[bold red]no credentials[/bold red]"]
             if push_remote:
                 row.append("-")
@@ -1632,9 +1793,10 @@ def backup_all(push_remote: bool) -> None:
             continue
 
         # Create backup
-        ok = backup_mod.create_backup(instance_url, auth_token=token)
+        ok, reason = backup_mod.create_backup_ex(instance_url, auth_token=token)
         if not ok:
-            row = [inst_name, "-", "[bold red]failed[/bold red]"]
+            failures += 1
+            row = [inst_name, "-", f"[bold red]failed ({reason})[/bold red]"]
             if push_remote:
                 row.append("-")
             table.add_row(*row)
@@ -1662,11 +1824,20 @@ def backup_all(push_remote: bool) -> None:
                 if deleted_count:
                     row[-1] = f"[bold green]uploaded[/bold green] [dim]({deleted_count} pruned)[/dim]"
             else:
+                failures += 1
                 row.append(f"[bold red]{result}[/bold red]")
 
         table.add_row(*row)
 
     console.print(table)
+
+    # Non-zero exit on any failure so the pm-sftp-backup timer (and scripts)
+    # can detect partial failures via the service result.
+    if failures:
+        console.print(
+            f"[bold red]{failures} instance(s) failed to back up.[/bold red]"
+        )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1696,6 +1867,11 @@ def update(name: str, pb_version: str | None) -> None:
         sys.exit(1)
 
     new_version = result.get("version", pb_version or "latest")
+    if result.get("skipped"):
+        console.print(
+            f"[dim]Instance '{name}' is already at version {new_version} — nothing to do.[/dim]"
+        )
+        return
     console.print(
         f"[bold green]Instance '{name}' updated: {old_version} → {new_version}[/bold green]"
     )
@@ -1707,8 +1883,15 @@ def update(name: str, pb_version: str | None) -> None:
 
 
 @cli.command("update-all")
-def update_all() -> None:
-    """Update all PocketBase instances to the latest version."""
+@click.option("--yes", "assume_yes", is_flag=True, default=False,
+              help="Skip the confirmation prompt (non-interactive use).")
+def update_all(assume_yes: bool) -> None:
+    """Update all PocketBase instances to the latest version.
+
+    Asks for confirmation first (restarts cause downtime) and skips
+    instances already at the target version.  Exits non-zero if any
+    update fails.
+    """
     from pocketmanager.core import instance as instance_mod
     from pocketmanager.core.state import get_all_instances
 
@@ -1717,23 +1900,40 @@ def update_all() -> None:
         console.print("[dim]No instances found.[/dim]")
         return
 
+    if not assume_yes:
+        console.print(
+            f"[bold]This will update {len(instances)} instance(s) to the latest "
+            "PocketBase version. Each update restarts the instance (brief downtime).[/bold]"
+        )
+        if not click.confirm("Continue?", default=False):
+            console.print("[dim]Update cancelled.[/dim]")
+            return
+
     table = Table(title="Update All Instances")
     table.add_column("Name", style="cyan", no_wrap=True)
     table.add_column("Old Version")
     table.add_column("New Version")
     table.add_column("Status", justify="center")
 
+    failures = 0
     for inst in instances:
         inst_name = inst.get("name", "")
         old_version = inst.get("version", "unknown")
         try:
             result = instance_mod.update_instance(inst_name)
             new_version = result.get("version", "latest")
-            table.add_row(inst_name, old_version, new_version, "[bold green]ok[/bold green]")
+            if result.get("skipped"):
+                table.add_row(inst_name, old_version, new_version, "[dim]already current[/dim]")
+            else:
+                table.add_row(inst_name, old_version, new_version, "[bold green]ok[/bold green]")
         except (ValueError, RuntimeError) as exc:
+            failures += 1
             table.add_row(inst_name, old_version, "-", f"[bold red]{exc}[/bold red]")
 
     console.print(table)
+    if failures:
+        console.print(f"[bold red]{failures} update(s) failed.[/bold red]")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1742,7 +1942,9 @@ def update_all() -> None:
 
 
 @cli.command("self-update")
-def self_update() -> None:
+@click.option("--yes", "assume_yes", is_flag=True, default=False,
+              help="Skip the confirmation prompt (non-interactive use).")
+def self_update(assume_yes: bool) -> None:
     """Update PocketManager to the latest version."""
     from pocketmanager.core import selfupdate as selfupdate_mod
 
@@ -1750,10 +1952,19 @@ def self_update() -> None:
     update = selfupdate_mod.check_for_update()
 
     if update is None:
-        console.print(
-            "[bold yellow]Could not check for updates[/bold yellow] "
-            "(GitHub unreachable or rate limited — try again later)."
-        )
+        if not selfupdate_mod.has_version_marker():
+            console.print(
+                "[bold yellow]This installation has no version marker — "
+                "self-update cannot compare versions.[/bold yellow]\n"
+                "[dim]Reinstall once from the repo to enable self-updating:\n"
+                "  pip install --user --force-reinstall --no-cache-dir "
+                "git+https://github.com/YacineSahli/PocketManager.git@master[/dim]"
+            )
+        else:
+            console.print(
+                "[bold yellow]Could not check for updates[/bold yellow] "
+                "(GitHub unreachable or rate limited — try again later)."
+            )
         return
 
     if update.get("up_to_date"):
@@ -1770,7 +1981,7 @@ def self_update() -> None:
         for line in incoming.splitlines():
             console.print(f"  {line}")
 
-    if not click.confirm("\nDo you want to update now?", default=True):
+    if not assume_yes and not click.confirm("\nDo you want to update now?", default=True):
         console.print("[dim]Update cancelled.[/dim]")
         return
 
@@ -1778,6 +1989,12 @@ def self_update() -> None:
     success = selfupdate_mod.perform_update()
     if success:
         console.print("\n[bold green]PocketManager updated successfully.[/bold green]")
+        console.print(
+            "[bold]Run 'pm doctor' to apply post-update migrations:[/bold] "
+            "rebinds instances to the configured bind_host (important for "
+            "pre-2026-10-28 installs bound to 0.0.0.0) and removes the "
+            "legacy root-crontab SFTP job."
+        )
     else:
         console.print("[bold red]Update failed. Check the logs for details.[/bold red]")
         sys.exit(1)
@@ -1832,21 +2049,28 @@ def config(args: tuple[str, ...], reveal: bool) -> None:
             console.print("[dim]Usage: pm config set <key> <value>[/dim]")
             sys.exit(1)
 
-        value: str | int | float | bool = " ".join(args[2:])
+        raw_value: str = " ".join(args[2:])
 
-        # Attempt type coercion for common types
-        if value.lower() in ("true", "yes"):
-            value = True
-        elif value.lower() in ("false", "no"):
-            value = False
-        else:
+        # Type-aware coercion: cast to the type of the CURRENT value so a
+        # numeric-looking SFTP password or host stays a string. Unknown keys
+        # are stored as strings.
+        current = config_mod.get(key)
+        value: str | int | float | bool = raw_value
+        if isinstance(current, bool):
+            if raw_value.lower() in ("true", "yes", "1"):
+                value = True
+            elif raw_value.lower() in ("false", "no", "0"):
+                value = False
+        elif isinstance(current, int) and not isinstance(current, bool):
             try:
-                value = int(value)
+                value = int(raw_value)
             except ValueError:
-                try:
-                    value = float(value)
-                except ValueError:
-                    pass  # keep as string
+                pass
+        elif isinstance(current, float):
+            try:
+                value = float(raw_value)
+            except ValueError:
+                pass
 
         config_mod.set(key, value)
         console.print(f"[bold green]Config updated: {key} = {value}[/bold green]")
@@ -1881,7 +2105,12 @@ def migrate_existing() -> None:
 
     console.print(f"[bold green]Migrated {len(migrated)} instance(s):[/bold green]")
     for inst in migrated:
-        console.print(f"  [cyan]•[/cyan] {inst.get('name', 'unknown')} (port {inst.get('port', '?')})")
+        email = inst.get("superadmin_email")
+        suffix = f", superadmin provisioned: {email}" if email else ""
+        console.print(
+            f"  [cyan]•[/cyan] {inst.get('name', 'unknown')} "
+            f"(port {inst.get('port', '?')}{suffix})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2159,6 +2388,140 @@ def info() -> None:
 
     console.print(Panel(panel_content, title="System Information", border_style="blue"))
 
+    # Post-update migration pending? Nudge the user towards `pm doctor`.
+    from pocketmanager.core.state import get_meta
+
+    if instances and not get_meta("doctor_bind_host_migrate"):
+        console.print(
+            "[bold yellow]Post-update migration pending — run 'pm doctor' to "
+            "rebind instances to the configured bind_host and remove the "
+            "legacy root-crontab SFTP job.[/bold yellow]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--yes", "assume_yes", is_flag=True, default=False,
+              help="Skip the restart confirmation prompt (non-interactive use).")
+def doctor(assume_yes: bool) -> None:
+    """Apply post-update migrations to existing instances.
+
+    Regenerates every instance's systemd unit with the *configured*
+    ``bind_host`` (important after the 2026-10-28 loopback security fix for
+    installs whose units still bind 0.0.0.0) and removes the legacy
+    root-crontab SFTP backup entry.
+
+    Instances whose units actually change are restarted (with confirmation).
+    """
+    import re as _re
+    from datetime import datetime, timezone
+
+    from pocketmanager.core.config import get as cfg_get
+    from pocketmanager.core.cron import cleanup_legacy_crontab
+    from pocketmanager.core.state import get_all_instances, set_meta
+    from pocketmanager.core.systemd import (
+        get_service_path,
+        modify_service,
+        restart_service,
+    )
+
+    instances = get_all_instances()
+    configured_bind = str(cfg_get("bind_host", "127.0.0.1"))
+
+    console.print(f"[bold]Configured bind_host:[/bold] {configured_bind}\n")
+
+    to_rebind: list[str] = []
+    unchanged: list[str] = []
+    missing: list[str] = []
+
+    for inst in instances:
+        name = inst.get("name", "")
+        service_path = get_service_path(name)
+        if not service_path.is_file():
+            missing.append(name)
+            continue
+        content = service_path.read_text(encoding="utf-8")
+        current_bind: str | None = None
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ExecStart=") and "--http=" in stripped:
+                match = _re.search(r"--http=([0-9.]+):(\d+)", stripped)
+                if match:
+                    current_bind = match.group(1)
+                break
+        if current_bind is None:
+            console.print(
+                f"[bold yellow]Could not parse the bind address for '{name}' — "
+                "regenerating its unit anyway.[/bold yellow]"
+            )
+            to_rebind.append(name)
+        elif current_bind == configured_bind:
+            unchanged.append(name)
+        else:
+            console.print(
+                f"[cyan]•[/cyan] {name}: {current_bind} → {configured_bind}"
+            )
+            to_rebind.append(name)
+
+    if missing:
+        for name in missing:
+            console.print(f"[bold red]• {name}: no service file found (skipped)[/bold red]")
+
+    if unchanged:
+        console.print(
+            f"[dim]{len(unchanged)} instance(s) already bound to "
+            f"{configured_bind}.[/dim]"
+        )
+
+    if to_rebind and not assume_yes:
+        console.print()
+        if not click.confirm(
+            f"Regenerate the unit file(s) for {len(to_rebind)} instance(s) and "
+            "restart them? (restarts cause brief downtime)",
+            default=True,
+        ):
+            console.print("[dim]Migration cancelled — re-run 'pm doctor' later.[/dim]")
+            return
+
+    failures = 0
+    for name in to_rebind:
+        try:
+            modify_service(name=name, bind_host=configured_bind)
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            failures += 1
+            console.print(f"[bold red]Failed to regenerate unit for '{name}': {exc}[/bold red]")
+            continue
+        if restart_service(name):
+            console.print(f"[bold green]• {name}: unit regenerated, restarted[/bold green]")
+        else:
+            console.print(
+                f"[bold yellow]• {name}: unit regenerated but restart failed — "
+                f"start manually with: pm start {name}[/bold yellow]"
+            )
+
+    # Remove the legacy root-crontab SFTP job from pre-timer installs.
+    cleanup_legacy_crontab()
+    console.print("[dim]Legacy root-crontab cleanup checked.[/dim]")
+
+    # Record that this migration pass has run so `pm info` stops nudging.
+    set_meta(
+        "doctor_bind_host_migrate",
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+    if failures:
+        console.print(
+            f"[bold red]Doctor finished with {failures} failure(s) — re-run "
+            "'pm doctor' after fixing the errors above.[/bold red]"
+        )
+        sys.exit(1)
+
+    console.print("[bold green]Doctor complete — all migrations applied.[/bold green]")
+
 
 # ---------------------------------------------------------------------------
 # credentials
@@ -2181,7 +2544,7 @@ def _require_backup_auth(name: str, instance: dict) -> str | None:
         )
         return None
 
-    from pocketmanager.core.backup import authenticate
+    from pocketmanager.core.backup import authenticate, is_instance_reachable
 
     port = instance.get("port")
     if not port:
@@ -2189,11 +2552,18 @@ def _require_backup_auth(name: str, instance: dict) -> str | None:
     url = f"http://localhost:{port}"
     token = authenticate(url, email, password)
     if not token:
-        console.print(
-            "[bold red]PocketBase authentication failed. "
-            "Check the stored superadmin credentials.[/bold red]\n"
-            f"[dim]Update with: pm credentials {name}[/dim]"
-        )
+        if not is_instance_reachable(url):
+            console.print(
+                "[bold red]PocketBase is not responding. The instance may be "
+                f"stopped.[/bold red]\n"
+                f"[dim]Start it with: pm start {name}[/dim]"
+            )
+        else:
+            console.print(
+                "[bold red]PocketBase authentication failed. "
+                "Check the stored superadmin credentials.[/bold red]\n"
+                f"[dim]Update with: pm credentials {name}[/dim]"
+            )
         return None
     return token
 
@@ -2207,7 +2577,7 @@ def credentials(name: str) -> None:
     restore).  They are stored in the instance state file (owner-only readable).
     """
     from pocketmanager.core.state import get_instance, update_instance
-    from pocketmanager.core.backup import authenticate
+    from pocketmanager.core.backup import authenticate, is_instance_reachable
 
     instance = get_instance(name)
     if instance is None:
@@ -2217,6 +2587,17 @@ def credentials(name: str) -> None:
     port = instance.get("port")
     if not port:
         console.print(f"[bold red]Error: No port configured for instance '{name}'.[/bold red]")
+        sys.exit(1)
+
+    # Check the instance is actually up before prompting — credentials can
+    # only be verified against a live PocketBase.
+    url = f"http://localhost:{port}"
+    if not is_instance_reachable(url):
+        console.print(
+            "[bold red]Instance is not responding — credentials can only be "
+            "verified against a running PocketBase.[/bold red]\n"
+            f"[dim]Start it with: pm start {name}[/dim]"
+        )
         sys.exit(1)
 
     # Show current state
@@ -2232,7 +2613,6 @@ def credentials(name: str) -> None:
 
     # Verify credentials against the instance
     console.print("[dim]Verifying credentials...[/dim]")
-    url = f"http://localhost:{port}"
     token = authenticate(url, email, password)
     if not token:
         console.print(

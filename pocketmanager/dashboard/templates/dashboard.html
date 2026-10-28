@@ -19,7 +19,9 @@
     --border-light: #353849;
     --text-primary: #e4e6f0;
     --text-secondary: #8b8fa3;
-    --text-muted: #5c6078;
+    /* #9196ad on card bg #1e2130: L(#9196ad)=0.3085, L(#1e2130)=0.0158 →
+       (0.3085+0.05)/(0.0158+0.05) ≈ 5.45:1 ≥ 4.5:1 (WCAG AA) */
+    --text-muted: #9196ad;
     --accent-blue: #5b8def;
     --accent-blue-hover: #4a7ade;
     --accent-green: #4ade80;
@@ -367,7 +369,9 @@
   }
 
   .card-details.open {
-    max-height: 800px;
+    /* No fixed cap — long env/backup lists must not be clipped */
+    max-height: none;
+    overflow: visible;
   }
 
   .card-details-inner {
@@ -432,6 +436,29 @@
     gap: 12px;
     color: var(--text-secondary);
     flex-shrink: 0;
+  }
+
+  .cred-form {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .cred-form input {
+    flex: 1;
+    min-width: 120px;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+    transition: border-color var(--transition);
+  }
+
+  .cred-form input:focus {
+    border-color: var(--accent-blue);
   }
 
   .health-result {
@@ -668,11 +695,17 @@
     box-shadow: 0 8px 30px rgba(0,0,0,0.4);
     animation: slide-in 0.3s ease, fade-out 0.3s ease 2.7s forwards;
     max-width: 380px;
+    cursor: pointer;
   }
 
   .toast-success { border-left: 3px solid var(--accent-green); }
   .toast-error { border-left: 3px solid var(--accent-red); }
   .toast-info { border-left: 3px solid var(--accent-blue); }
+
+  /* Error toasts persist 8s — fade-out delay matches the JS timeout */
+  .toast.toast-error {
+    animation: slide-in 0.3s ease, fade-out 0.3s ease 7.7s forwards;
+  }
 
   @keyframes slide-in {
     from { transform: translateX(100%); opacity: 0; }
@@ -681,6 +714,24 @@
 
   @keyframes fade-out {
     to { opacity: 0; transform: translateY(-10px); }
+  }
+
+  /* ── Session-invalid Banner ──────────────────────────────────────── */
+  .session-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 10px 24px;
+    background: var(--accent-red-dim);
+    border-bottom: 1px solid var(--accent-red);
+    color: var(--text-primary);
+    font-size: 13px;
   }
 
   /* ── Loading Spinner ────────────────────────────────────────────── */
@@ -754,7 +805,7 @@
     </div>
   </div>
   <div class="toolbar-right">
-    <button class="btn" onclick="healthCheck()" title="Check health of all instances">
+    <button class="btn" id="healthCheckBtn" onclick="healthCheck()" title="Check health of all instances">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
       </svg>
@@ -775,10 +826,10 @@
 </div>
 
 <!-- ── Toast Container ────────────────────────────────────────────── -->
-<div class="toast-container" id="toastContainer"></div>
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
 <!-- ── Create Instance Modal ──────────────────────────────────────── -->
-<div class="modal-overlay" id="createModal">
+<div class="modal-overlay" id="createModal" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-header">
       <h2>Create Instance</h2>
@@ -836,7 +887,7 @@
 </div>
 
 <!-- ── Logs Modal ─────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="logsModal">
+<div class="modal-overlay" id="logsModal" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-header">
       <h2 id="logsTitle">Logs</h2>
@@ -856,7 +907,7 @@
 </div>
 
 <!-- ── Remove Confirm Modal ───────────────────────────────────────── -->
-<div class="modal-overlay" id="removeModal">
+<div class="modal-overlay" id="removeModal" role="dialog" aria-modal="true">
   <div class="modal" style="max-width: 400px;">
     <div class="modal-header">
       <h2>Remove Instance</h2>
@@ -890,6 +941,11 @@ let expandedCards = new Set();
 let pendingRemoveName = null;
 let refreshInterval = null;
 let appConfig = {};
+// Detail DATA cache (not HTML) so poll re-renders don't wipe loaded
+// health/backups results — keyed by instance name.
+const detailCache = { health: new Map(), backups: new Map() };
+let pollInFlight = false;
+let sessionInvalidated = false;
 
 // ── API Helpers ────────────────────────────────────────────────────
 async function api(path, options = {}) {
@@ -899,10 +955,26 @@ async function api(path, options = {}) {
     ...options,
   });
   if (resp.status === 401) {
-    showToast('Authentication required', 'error');
+    handleSessionInvalid();
     throw new Error('Unauthorized');
   }
   return resp;
+}
+
+// ── Session invalid handling ───────────────────────────────────────
+function handleSessionInvalid() {
+  if (sessionInvalidated) return;
+  sessionInvalidated = true;
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+  }
+  const banner = document.createElement('div');
+  banner.className = 'session-banner';
+  banner.innerHTML = `
+    <span>Session invalid — reload to re-authenticate</span>
+    <button class="btn btn-sm" onclick="location.reload()">Reload</button>`;
+  document.body.appendChild(banner);
 }
 
 // ── Instance Fetching ──────────────────────────────────────────────
@@ -911,6 +983,16 @@ async function fetchInstances() {
     const resp = await api('/instances');
     const data = await resp.json();
     allInstances = data.instances || [];
+
+    // Drop cached detail data for instances that no longer exist
+    const names = new Set(allInstances.map(i => i.name));
+    for (const key of detailCache.health.keys()) {
+      if (!names.has(key)) detailCache.health.delete(key);
+    }
+    for (const key of detailCache.backups.keys()) {
+      if (!names.has(key)) detailCache.backups.delete(key);
+    }
+
     renderGrid();
     updateStats();
   } catch (err) {
@@ -962,7 +1044,7 @@ function renderGrid() {
 
     return `
       <div class="card" data-name="${escAttr(inst.name)}">
-        <div class="card-header" data-action="toggle">
+        <div class="card-header" data-action="toggle" tabindex="0" role="button" aria-expanded="${isExpanded}">
           <div class="card-header-left">
             <div class="instance-name">${escHtml(inst.name)}</div>
           </div>
@@ -1029,6 +1111,15 @@ function renderGrid() {
         </div>
       </div>`;
   }).join('');
+
+  // The innerHTML rebuild above wiped loaded health/backups details —
+  // re-render them from the cached data so the 30s poll doesn't blank them.
+  for (const inst of filtered) {
+    const h = detailCache.health.get(inst.name);
+    if (h) renderHealthResult(inst.name, h);
+    const b = detailCache.backups.get(inst.name);
+    if (b) renderBackupsResult(inst.name, b);
+  }
 }
 
 function renderDetails(inst) {
@@ -1108,7 +1199,8 @@ function updateStats() {
 }
 
 // ── Instance Actions ───────────────────────────────────────────────
-async function startInstance(name) {
+async function startInstance(name, btn) {
+  const done = busyButton(btn, '…');
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/start`, { method: 'POST' });
     const data = await resp.json();
@@ -1116,14 +1208,17 @@ async function startInstance(name) {
       showToast(`${name} started`, 'success');
       setTimeout(fetchInstances, 500);
     } else {
-      showToast(`Failed to start ${name}`, 'error');
+      showToast(data.error || `Failed to start ${name}`, 'error');
     }
   } catch (e) {
     showToast(`Failed to start ${name}`, 'error');
+  } finally {
+    done();
   }
 }
 
-async function stopInstance(name) {
+async function stopInstance(name, btn) {
+  const done = busyButton(btn, '…');
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/stop`, { method: 'POST' });
     const data = await resp.json();
@@ -1131,14 +1226,17 @@ async function stopInstance(name) {
       showToast(`${name} stopped`, 'success');
       setTimeout(fetchInstances, 500);
     } else {
-      showToast(`Failed to stop ${name}`, 'error');
+      showToast(data.error || `Failed to stop ${name}`, 'error');
     }
   } catch (e) {
     showToast(`Failed to stop ${name}`, 'error');
+  } finally {
+    done();
   }
 }
 
-async function restartInstance(name) {
+async function restartInstance(name, btn) {
+  const done = busyButton(btn, '…');
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/restart`, { method: 'POST' });
     const data = await resp.json();
@@ -1146,11 +1244,33 @@ async function restartInstance(name) {
       showToast(`${name} restarted`, 'success');
       setTimeout(fetchInstances, 1500);
     } else {
-      showToast(`Failed to restart ${name}`, 'error');
+      showToast(data.error || `Failed to restart ${name}`, 'error');
     }
   } catch (e) {
     showToast(`Failed to restart ${name}`, 'error');
+  } finally {
+    done();
   }
+}
+
+// ── Modal helpers ──────────────────────────────────────────────────
+function openModal(id) {
+  const overlay = document.getElementById(id);
+  if (!overlay.classList.contains('active')) {
+    overlay._returnFocus = document.activeElement;
+  }
+  overlay.classList.add('active');
+  const focusable = overlay.querySelector('input, select, textarea, button');
+  if (focusable) focusable.focus();
+}
+
+function closeModal(id) {
+  const overlay = document.getElementById(id);
+  overlay.classList.remove('active');
+  if (overlay._returnFocus && document.contains(overlay._returnFocus)) {
+    overlay._returnFocus.focus();
+  }
+  overlay._returnFocus = null;
 }
 
 // ── Remove Instance ────────────────────────────────────────────────
@@ -1158,11 +1278,11 @@ function openRemoveModal(name) {
   pendingRemoveName = name;
   document.getElementById('removeInstanceName').textContent = name;
   document.getElementById('removeKeepData').checked = false;
-  document.getElementById('removeModal').classList.add('active');
+  openModal('removeModal');
 }
 
 function closeRemoveModal() {
-  document.getElementById('removeModal').classList.remove('active');
+  closeModal('removeModal');
   pendingRemoveName = null;
 }
 
@@ -1172,6 +1292,8 @@ async function confirmRemove() {
   const keepData = document.getElementById('removeKeepData').checked;
   closeRemoveModal();
 
+  const btn = document.getElementById('removeConfirmBtn');
+  const done = busyButton(btn, 'Removing…');
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}`, {
       method: 'DELETE',
@@ -1183,10 +1305,14 @@ async function confirmRemove() {
     } else {
       showToast(`${name} removed`, 'success');
       expandedCards.delete(name);
+      detailCache.health.delete(name);
+      detailCache.backups.delete(name);
       fetchInstances();
     }
   } catch (e) {
     showToast(`Failed to remove ${name}`, 'error');
+  } finally {
+    done();
   }
 }
 
@@ -1199,12 +1325,11 @@ function openCreateModal() {
   document.getElementById('createDomain').value = '';
   document.getElementById('createEnv').value = '';
   document.getElementById('createPangolin').checked = true;
-  document.getElementById('createModal').classList.add('active');
-  setTimeout(() => document.getElementById('createName').focus(), 100);
+  openModal('createModal');
 }
 
 function closeCreateModal() {
-  document.getElementById('createModal').classList.remove('active');
+  closeModal('createModal');
 }
 
 async function createInstance() {
@@ -1265,10 +1390,14 @@ async function createInstance() {
 async function viewLogs(name) {
   document.getElementById('logsTitle').textContent = `Logs: ${name}`;
   document.getElementById('logsContent').textContent = 'Loading...';
-  document.getElementById('logsModal').classList.add('active');
+  openModal('logsModal');
 
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/logs?lines=200`);
+    if (resp.status === 404) {
+      document.getElementById('logsContent').textContent = 'Instance not found.';
+      return;
+    }
     const data = await resp.json();
     document.getElementById('logsContent').textContent = data.logs || 'No logs available.';
   } catch (e) {
@@ -1277,120 +1406,191 @@ async function viewLogs(name) {
 }
 
 function closeLogsModal() {
-  document.getElementById('logsModal').classList.remove('active');
+  closeModal('logsModal');
 }
 
 // ── Health Check (all) ─────────────────────────────────────────────
 async function healthCheck() {
+  const btn = document.getElementById('healthCheckBtn');
+  const done = busyButton(btn, 'Checking…');
   showToast('Running health checks...', 'info');
   try {
     const resp = await api('/health');
     const data = await resp.json();
     const results = data.results || [];
 
-    // Update card statuses based on health data
-    const healthMap = {};
-    for (const r of results) {
-      healthMap[r.name] = r;
-    }
-
-    for (const inst of allInstances) {
-      const h = healthMap[inst.name];
-      if (h) {
-        inst._health = h;
-      }
-    }
-
     let healthyCount = 0;
-    let totalChecked = results.length;
-
     for (const r of results) {
+      detailCache.health.set(r.name, r);
       if (r.healthy) healthyCount++;
     }
 
     renderGrid();
-    showToast(`Health check complete: ${healthyCount}/${totalChecked} healthy`, healthyCount === totalChecked ? 'success' : 'error');
+    showToast(`Health check complete: ${healthyCount}/${results.length} healthy`, healthyCount === results.length ? 'success' : 'error');
   } catch (e) {
     showToast('Health check failed', 'error');
+  } finally {
+    done();
   }
 }
 
 // ── Health Check (single instance) ─────────────────────────────────
-async function fetchHealthDetail(name) {
+async function fetchHealthDetail(name, btn) {
+  const done = busyButton(btn, '…');
   const el = document.getElementById(`health-${name}`);
-  if (!el) return;
+  if (!el) {
+    done();
+    return;
+  }
   el.innerHTML = '<div class="spinner" style="margin:8px 0"></div>';
 
   try {
-    // We use the health endpoint for all but filter for the specific instance
-    const resp = await api('/health');
-    const data = await resp.json();
-    const result = (data.results || []).find(r => r.name === name);
-
-    if (!result) {
-      el.innerHTML = '<div class="no-data">No health data available.</div>';
-      return;
+    const resp = await api(`/instances/${encodeURIComponent(name)}/health`);
+    const result = await resp.json();
+    if (result.healthy === undefined) {
+      // 404/502 body: {"error": "..."} — normalize so it renders below
+      result.healthy = false;
+      result.response_time_ms = null;
     }
-
-    if (result.healthy) {
-      el.innerHTML = `
-        <div class="health-result health-healthy">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
-          <span style="color:var(--accent-green)">Healthy</span>
-          <span style="color:var(--text-muted);margin-left:auto">${result.response_time_ms != null ? result.response_time_ms + 'ms' : ''}</span>
-        </div>`;
-    } else {
-      el.innerHTML = `
-        <div class="health-result health-unhealthy">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-          <span style="color:var(--accent-red)">Unhealthy</span>
-          ${result.error ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px">${escHtml(result.error)}</span>` : ''}
-        </div>`;
-    }
+    detailCache.health.set(name, result);
+    renderHealthResult(name, result);
   } catch (e) {
     el.innerHTML = '<div class="no-data">Health check failed.</div>';
+  } finally {
+    done();
+  }
+}
+
+function renderHealthResult(name, result) {
+  const el = document.getElementById(`health-${name}`);
+  if (!el) return;
+
+  if (result.healthy) {
+    el.innerHTML = `
+      <div class="health-result health-healthy">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <span style="color:var(--accent-green)">Healthy</span>
+        <span style="color:var(--text-muted);margin-left:auto">${result.response_time_ms != null ? result.response_time_ms + 'ms' : ''}</span>
+      </div>`;
+  } else {
+    el.innerHTML = `
+      <div class="health-result health-unhealthy">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+        <span style="color:var(--accent-red)">Unhealthy</span>
+        ${result.error ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px">${escHtml(result.error)}</span>` : ''}
+      </div>`;
   }
 }
 
 // ── Backups ────────────────────────────────────────────────────────
-async function fetchBackups(name) {
+async function fetchBackups(name, btn) {
+  const done = busyButton(btn, '…');
   const el = document.getElementById(`backups-${name}`);
-  if (!el) return;
+  if (!el) {
+    done();
+    return;
+  }
   el.innerHTML = '<div class="spinner" style="margin:8px 0"></div>';
 
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/backups`);
     const data = await resp.json();
-    const backups = data.backups || [];
-
-    if (backups.length === 0) {
-      el.innerHTML = '<div class="no-data">No backups found.</div>';
-      return;
-    }
-
-    el.innerHTML = `
-      <div class="detail-section-title" style="margin-bottom:6px">Backups (${backups.length})</div>
-      <div class="backup-list">
-        ${backups.map(b => `
-          <div class="backup-item">
-            <span class="backup-item-key">${escHtml(b.key || 'backup')}</span>
-            <span class="backup-item-meta">
-              ${b.modified ? `<span>${escHtml(b.modified)}</span>` : ''}
-              ${b.size ? `<span>${escHtml(b.size)}</span>` : ''}
-            </span>
-          </div>
-        `).join('')}
-      </div>`;
+    detailCache.backups.set(name, data);
+    renderBackupsResult(name, data);
   } catch (e) {
     el.innerHTML = '<div class="no-data">Failed to load backups.</div>';
+  } finally {
+    done();
   }
 }
 
-async function createBackup(name) {
+function renderBackupsResult(name, data) {
+  const el = document.getElementById(`backups-${name}`);
+  if (!el) return;
+
+  if (data.auth === false || data.error === 'credentials_required') {
+    el.innerHTML = `
+      <div class="detail-section-title" style="margin-bottom:6px">Superadmin credentials required</div>
+      <div class="cred-form">
+        <input type="email" id="credEmail-${escAttr(name)}" placeholder="Superadmin email" autocomplete="off">
+        <input type="password" id="credPassword-${escAttr(name)}" placeholder="Password" autocomplete="new-password">
+        <button class="btn btn-sm btn-primary" data-action="save-credentials">Save</button>
+      </div>
+      <div id="credError-${escAttr(name)}" style="color:var(--accent-red);font-size:11px;margin-top:6px"></div>`;
+    return;
+  }
+
+  const backups = data.backups || [];
+  if (backups.length === 0) {
+    el.innerHTML = '<div class="no-data">No backups found.</div>';
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="detail-section-title" style="margin-bottom:6px">Backups (${backups.length})</div>
+    <div class="backup-list">
+      ${backups.map(b => `
+        <div class="backup-item">
+          <span class="backup-item-key">${escHtml(b.key || 'backup')}</span>
+          <span class="backup-item-meta">
+            ${b.modified ? `<span>${escHtml(b.modified)}</span>` : ''}
+            ${b.size ? `<span>${escHtml(b.size)}</span>` : ''}
+          </span>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+// ── Superadmin credentials ─────────────────────────────────────────
+async function saveCredentials(name, btn) {
+  const email = (document.getElementById(`credEmail-${name}`) || {}).value || '';
+  const password = (document.getElementById(`credPassword-${name}`) || {}).value || '';
+  const errEl = document.getElementById(`credError-${name}`);
+  if (errEl) errEl.textContent = '';
+  if (!email.trim() || !password) {
+    if (errEl) errEl.textContent = 'Email and password are required.';
+    return;
+  }
+
+  const done = busyButton(btn, 'Saving…');
+  try {
+    const resp = await api(`/instances/${encodeURIComponent(name)}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify({ email: email.trim(), password }),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      showToast(`Credentials saved for ${name}`, 'success');
+      fetchBackups(name);
+    } else if (errEl) {
+      errEl.textContent = data.error || 'Authentication failed';
+    }
+  } catch (e) {
+    if (errEl) errEl.textContent = 'Failed to save credentials';
+  } finally {
+    done();
+  }
+}
+
+function showCredentialsForm(name, serverError) {
+  const cached = { backups: [], auth: false, error: 'credentials_required' };
+  detailCache.backups.set(name, cached);
+  renderBackupsResult(name, cached);
+  const errEl = document.getElementById(`credError-${name}`);
+  if (errEl && serverError) errEl.textContent = serverError;
+  const input = document.getElementById(`credEmail-${name}`);
+  if (input) {
+    input.scrollIntoView({ block: 'center' });
+    input.focus();
+  }
+}
+
+async function createBackup(name, btn) {
+  const done = busyButton(btn, '…');
   showToast(`Creating backup for ${name}...`, 'info');
   try {
     const resp = await api(`/instances/${encodeURIComponent(name)}/backup`, { method: 'POST' });
@@ -1399,11 +1599,15 @@ async function createBackup(name) {
       showToast(`Backup created for ${name}`, 'success');
       // Refresh backups list
       fetchBackups(name);
+    } else if (resp.status === 403 || (data.error || '').toLowerCase().includes('credential')) {
+      showCredentialsForm(name, data.error);
     } else {
-      showToast(`Failed to create backup for ${name}`, 'error');
+      showToast(data.error || `Failed to create backup for ${name}`, 'error');
     }
   } catch (e) {
     showToast(`Failed to create backup for ${name}`, 'error');
+  } finally {
+    done();
   }
 }
 
@@ -1420,11 +1624,17 @@ function showToast(message, type = 'info') {
   };
 
   toast.innerHTML = (icons[type] || icons.info) + `<span>${escHtml(message)}</span>`;
+  toast.title = 'Dismiss';
+  toast.addEventListener('click', () => {
+    if (toast.parentNode) toast.parentNode.removeChild(toast);
+  });
   container.appendChild(toast);
 
+  // Error toasts persist longer (8s); the CSS fade-out delay matches.
+  const duration = type === 'error' ? 8000 : 3000;
   setTimeout(() => {
     if (toast.parentNode) toast.parentNode.removeChild(toast);
-  }, 3000);
+  }, duration);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────
@@ -1438,6 +1648,19 @@ function escHtml(str) {
 function escAttr(str) {
   if (str == null) return '';
   return String(str).replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Disable a button and show busy label while its fetch is in flight.
+// Returns a restore function; call it in finally.
+function busyButton(btn, label) {
+  if (!btn) return () => {};
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = label;
+  return () => {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  };
 }
 
 // ── Search ─────────────────────────────────────────────────────────
@@ -1458,6 +1681,7 @@ const ACTION_HANDLERS = {
   'health': fetchHealthDetail,
   'backups': fetchBackups,
   'create-backup': createBackup,
+  'save-credentials': saveCredentials,
 };
 
 document.getElementById('instanceGrid').addEventListener('click', e => {
@@ -1467,14 +1691,29 @@ document.getElementById('instanceGrid').addEventListener('click', e => {
   const name = card ? card.dataset.name : null;
   if (!name) return;
   const handler = ACTION_HANDLERS[actionEl.dataset.action];
-  if (handler) handler(name);
+  if (handler) handler(name, actionEl);
+});
+
+// Keyboard activation for non-native-button targets (the card-header
+// toggle div). Real <button> elements fire click natively on Enter/Space.
+document.getElementById('instanceGrid').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  if (e.target.closest('button')) return;
+  const actionEl = e.target.closest('[data-action]');
+  if (!actionEl) return;
+  e.preventDefault();
+  const card = actionEl.closest('[data-name]');
+  const name = card ? card.dataset.name : null;
+  if (!name) return;
+  const handler = ACTION_HANDLERS[actionEl.dataset.action];
+  if (handler) handler(name, actionEl);
 });
 
 // ── Modal close on overlay click ───────────────────────────────────
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) {
-      overlay.classList.remove('active');
+      closeModal(overlay.id);
     }
   });
 });
@@ -1482,13 +1721,21 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 // ── Keyboard shortcuts ─────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+    document.querySelectorAll('.modal-overlay.active').forEach(m => closeModal(m.id));
   }
 });
 
 // ── Auto-refresh ───────────────────────────────────────────────────
+function pollInstances() {
+  // Skip while the tab is hidden, never overlap in-flight polls, and
+  // stop entirely once the session has gone invalid.
+  if (document.hidden || pollInFlight || sessionInvalidated) return;
+  pollInFlight = true;
+  fetchInstances().finally(() => { pollInFlight = false; });
+}
+
 function startAutoRefresh() {
-  refreshInterval = setInterval(fetchInstances, 30000);
+  refreshInterval = setInterval(pollInstances, 30000);
 }
 
 // ── Init ───────────────────────────────────────────────────────────

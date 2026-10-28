@@ -32,6 +32,14 @@ jobs:
       - name: Run tests
         run: python -m pytest tests -v --tb=short
 
+  install-script:
+    # Cheap gate: syntax-check the installer (no Python needed).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install script syntax check
+        run: bash -n install.sh
+
   dashboard-only:
     # Fast lane that also runs on non-Linux contributors: dashboard tests
     # need no PocketBase binary.

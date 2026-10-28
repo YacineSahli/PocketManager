@@ -26,6 +26,7 @@ from pocketmanager.core.state import (
 from pocketmanager.core.systemd import (
     create_service,
     ensure_pocketbase_user,
+    get_service_path,
     get_status,
     is_active,
     remove_service,
@@ -201,6 +202,10 @@ def create_instance(
 
     # 3. Allocate / validate port
     if port is not None:
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                f"Port {port} is out of range. Use a port between 1 and 65535."
+            )
         if not is_port_free(port):
             raise ValueError(
                 f"Port {port} is already in use. Choose a different port."
@@ -214,28 +219,48 @@ def create_instance(
     # 5. Calculate paths
     instance_dir = _get_instance_dir(name)
 
-    # 6. Create directory structure
-    (instance_dir / "pb_data").mkdir(parents=True, exist_ok=True)
-    (instance_dir / "pb_hooks").mkdir(parents=True, exist_ok=True)
-    (instance_dir / "pb_migrations").mkdir(parents=True, exist_ok=True)
+    # Steps 6-10 provision the on-disk instance and its service file. If any
+    # of them fails, undo the partial work so a failed create never leaves an
+    # unregistered directory + unit file that `pm remove` refuses to touch.
+    try:
+        # 6. Create directory structure
+        (instance_dir / "pb_data").mkdir(parents=True, exist_ok=True)
+        (instance_dir / "pb_hooks").mkdir(parents=True, exist_ok=True)
+        (instance_dir / "pb_migrations").mkdir(parents=True, exist_ok=True)
 
-    # 7. Download / copy binary
-    cached_binary = ensure_binary(version)
-    binary_path = instance_dir / "pocketbase"
-    shutil.copy2(str(cached_binary), str(binary_path))
-    binary_path.chmod(0o755)
+        # 7. Download / copy binary
+        cached_binary = ensure_binary(version)
+        binary_path = instance_dir / "pocketbase"
+        shutil.copy2(str(cached_binary), str(binary_path))
+        binary_path.chmod(0o755)
 
-    # 8. Set permissions
-    set_permissions(str(instance_dir))
+        # 8. Set permissions
+        set_permissions(str(instance_dir))
 
-    # 9. Set capabilities
-    set_capabilities(str(binary_path))
+        # 9. Set capabilities
+        set_capabilities(str(binary_path))
 
-    # 10. Create systemd service (enabled so it survives reboots)
-    create_service(
-        name, port, str(instance_dir), env=env,
-        bind_host=get("bind_host", "127.0.0.1"),
-    )
+        # 10. Create systemd service (enabled so it survives reboots)
+        create_service(
+            name, port, str(instance_dir), env=env,
+            bind_host=get("bind_host", "127.0.0.1"),
+        )
+    except Exception:
+        # Best-effort cleanup — failures here must not mask the original
+        # error.  The unit file may exist even if create_service failed
+        # partway (e.g. at daemon-reload), so always attempt its removal.
+        subprocess.run(
+            ["sudo", "rm", "-f", str(get_service_path(name))],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["sudo", "systemctl", "daemon-reload"],
+            capture_output=True,
+            check=False,
+        )
+        shutil.rmtree(instance_dir, ignore_errors=True)
+        raise
 
     # 11. Auto-create superadmin (before starting service to avoid DB lock)
     admin_email: str | None = None
@@ -264,6 +289,39 @@ def create_instance(
         start_warning = (
             f"Service failed to start. Check logs with "
             f"'journalctl -u pocketbase-{name}.service -n 50'."
+        )
+
+    # 12b. Enable PocketBase's built-in backup schedule when the defaults say
+    # so — writing an `auto_backup: True` flag into state alone would leave
+    # the instance with NO actual backups while `pm ls` claims otherwise.
+    auto_backup_enabled = bool(get("defaults.auto_backups_enabled", True))
+    backup_cron = str(get("defaults.auto_backups_cron", "0 3 * * *"))
+    backup_max_keep = int(get("defaults.auto_backups_max_keep", 7))
+    auto_backup_active = False
+    backup_warning: str | None = None
+    if auto_backup_enabled and admin_email and admin_password and not start_warning:
+        try:
+            from pocketmanager.core.backup import authenticate, configure_auto_backup
+
+            token = authenticate(f"http://127.0.0.1:{port}", admin_email, admin_password)
+            if token and configure_auto_backup(
+                f"http://127.0.0.1:{port}", backup_cron, backup_max_keep,
+                auth_token=token,
+            ):
+                auto_backup_active = True
+        except Exception:
+            auto_backup_active = False
+        if not auto_backup_active:
+            backup_warning = (
+                f"Could not enable the automatic backup schedule "
+                f"('{backup_cron}'). Enable it manually with: "
+                f"pm local-backup-schedule {name} --enable"
+            )
+    elif auto_backup_enabled and not admin_email:
+        backup_warning = (
+            "No superadmin credentials — automatic backups were NOT enabled. "
+            f"Run 'pm credentials {name}', then: "
+            f"pm local-backup-schedule {name} --enable"
         )
 
     # 13. Pangolin integration (optional, non-blocking)
@@ -318,7 +376,9 @@ def create_instance(
         "domain": domain,
         "env": env or {},
         "pangolin_resource_id": pangolin_resource_id,
-        "auto_backup": get("defaults.auto_backups_enabled", True),
+        "auto_backup": auto_backup_active,
+        "backup_cron": backup_cron if auto_backup_active else "",
+        "backup_max_keep": backup_max_keep if auto_backup_active else 0,
         "superadmin_email": admin_email,
         "superadmin_password": admin_password,
     }
@@ -330,6 +390,7 @@ def create_instance(
         result["pangolin_warning"] = pangolin_warning
         result["admin_warning"] = admin_warning
         result["start_warning"] = start_warning
+        result["backup_warning"] = backup_warning
     return result  # type: ignore[return-value]
 
 
@@ -353,7 +414,9 @@ def remove_instance(
     Returns
     -------
     dict
-        The removed instance record.
+        The removed instance record, with a ``_warnings`` list describing any
+        cleanup steps that failed (service file survived, Pangolin resource
+        left behind, …) so the caller can surface them.
 
     Raises
     ------
@@ -365,20 +428,36 @@ def remove_instance(
     if instance is None:
         raise ValueError(f"Instance '{name}' not found.")
 
+    warnings: list[str] = []
+
     # 2. Stop service (ignore errors)
     stop_service(name)
 
     # 3. Remove systemd service
-    remove_service(name)
+    if not remove_service(name):
+        warnings.append(
+            f"Failed to fully remove the systemd service file for '{name}' — "
+            "remove it manually: "
+            f"sudo rm /etc/systemd/system/pocketbase-{name}.service && "
+            "sudo systemctl daemon-reload"
+        )
 
     # 4. Pangolin cleanup (optional, non-blocking)
     if remove_pangolin and instance.get("pangolin_resource_id"):
         try:
             from pocketmanager.core import pangolin as pangolin_mod
 
-            pangolin_mod.delete_resource(instance["pangolin_resource_id"])
-        except Exception:
-            pass
+            if not pangolin_mod.delete_resource(instance["pangolin_resource_id"]):
+                warnings.append(
+                    "Failed to delete the Pangolin resource "
+                    f"({instance['pangolin_resource_id']}) — it may still be "
+                    "routing traffic. Delete it from the Pangolin dashboard."
+                )
+        except Exception as exc:
+            warnings.append(
+                f"Failed to delete the Pangolin resource: {exc} — it may "
+                "still be routing traffic. Delete it from the Pangolin dashboard."
+            )
 
     # 5. Delete instance directory
     instance_dir = instance.get("instance_dir", "")
@@ -404,6 +483,8 @@ def remove_instance(
         # Shouldn't happen since we already found it, but be safe
         raise ValueError(f"Failed to remove instance '{name}' from state.")
 
+    if warnings:
+        removed["_warnings"] = warnings
     return removed
 
 
@@ -539,12 +620,17 @@ def update_instance(name: str, version: str | None = None) -> dict:
     if instance is None:
         raise ValueError(f"Instance '{name}' not found.")
 
-    # 1. Stop service
-    stop_service(name)
-
-    # 2. Resolve version
+    # 1. Resolve the target version BEFORE stopping anything — if the instance
+    # is already at the target, restarts would be pure downtime.
     if version is None:
         version = get_latest_version()
+    if version == instance.get("version"):
+        record = dict(instance)
+        record["skipped"] = True
+        return record
+
+    # 2. Stop service
+    stop_service(name)
 
     # 3. Download / cache new binary
     cached_binary = ensure_binary(version)

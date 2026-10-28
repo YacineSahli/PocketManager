@@ -63,6 +63,19 @@ def authenticate(
     return None
 
 
+def is_instance_reachable(instance_url: str, timeout: float = 3.0) -> bool:
+    """Return ``True`` if the instance's health endpoint responds.
+
+    Used to distinguish "instance not running" from "wrong credentials"
+    in error messages.
+    """
+    try:
+        resp = requests.get(f"{instance_url}/api/health", timeout=timeout)
+        return resp.status_code < 500
+    except Exception:
+        return False
+
+
 def get_instance_auth_token(instance_name: str) -> str | None:
     """Look up stored credentials for *instance_name* and obtain an auth token.
 
@@ -100,6 +113,17 @@ def create_backup(
     Sends ``POST {instance_url}/api/backups`` with an optional ``name``.
     Returns ``True`` if the server responded with a success status code.
     """
+    ok, _ = create_backup_ex(instance_url, name=name, auth_token=auth_token)
+    return ok
+
+
+def create_backup_ex(
+    instance_url: str,
+    name: str | None = None,
+    *,
+    auth_token: str | None = None,
+) -> tuple[bool, str | None]:
+    """Like :func:`create_backup` but also returns a failure reason."""
     try:
         headers: dict[str, str] = {}
         if auth_token:
@@ -114,9 +138,14 @@ def create_backup(
             timeout=30,
         )
         resp.raise_for_status()
-        return True
-    except Exception:
-        return False
+        return True, None
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
+        return False, f"HTTP {status}"
+    except requests.RequestException as exc:
+        return False, f"connection error ({exc.__class__.__name__})"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def get_backup_cron_status(
@@ -258,6 +287,21 @@ def restore_backup(
     PocketBase automatically restarts the process after a successful restore.
     Returns ``True`` on success (expected 204).
     """
+    ok, _ = restore_backup_ex(instance_url, backup_key, auth_token=auth_token)
+    return ok
+
+
+def restore_backup_ex(
+    instance_url: str,
+    backup_key: str,
+    *,
+    auth_token: str | None = None,
+) -> tuple[bool, str | None]:
+    """Like :func:`restore_backup` but also returns a failure reason.
+
+    Distinguishes a missing backup key (404), an auth failure (401/403)
+    and connectivity problems so callers can print actionable messages.
+    """
     try:
         headers: dict[str, str] = {}
         if auth_token:
@@ -268,9 +312,21 @@ def restore_backup(
             timeout=60,
         )
         resp.raise_for_status()
-        return True
-    except Exception:
-        return False
+        return True, None
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 0
+        if status == 404:
+            return False, f"backup '{backup_key}' not found (check 'pm backups')"
+        if status in (401, 403):
+            return False, "authentication failed (superadmin credentials rejected)"
+        return False, f"HTTP {status}"
+    except requests.RequestException as exc:
+        return False, (
+            f"could not reach the instance ({exc.__class__.__name__}) — "
+            "is it running? (pm start)"
+        )
+    except Exception as exc:
+        return False, str(exc)
 
 
 def delete_backup(

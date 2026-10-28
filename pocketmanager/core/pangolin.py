@@ -386,27 +386,3 @@ def remove_resource_password(resource_id: int | str) -> bool:
         return True
     except Exception:
         return False
-
-
-def list_domains(org_id: str) -> list[dict]:
-    """List all domains available in the given organisation.
-
-    Returns a list of domain objects, or an empty list on failure.
-    """
-    config = load_config()
-    api_url = config.get("pangolin", {}).get("api_url", "")
-    headers = _get_api_headers(config)
-
-    if not api_url:
-        return []
-
-    try:
-        resp = requests.get(
-            f"{api_url}/org/{org_id}/domains",
-            headers=headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return []

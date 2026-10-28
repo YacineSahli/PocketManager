@@ -1,12 +1,11 @@
 """Health checking for PocketBase instances.
 
 Provides helpers to probe the ``/api/health`` endpoint of each instance
-and aggregate results into a human-readable table.
+and aggregate the results.
 
 Functions:
 - check_instance_health: probe a single instance by port
 - check_all_instances: probe every registered instance
-- format_health_table: render results as a formatted table
 """
 
 from __future__ import annotations
@@ -106,67 +105,3 @@ def check_all_instances() -> list[dict[str, Any]]:
         )
 
     return results
-
-
-def format_health_table(results: list[dict[str, Any]]) -> str:
-    """Render health-check results as a formatted table.
-
-    Uses the **rich** library when available for a nicer table; otherwise
-    falls back to a plain-text alignment.
-    """
-    if not results:
-        return "No instances found."
-
-    # ---- Try rich first ---------------------------------------------------
-    try:
-        from rich.console import Console
-        from rich.table import Table
-
-        table = Table(title="Instance Health")
-        table.add_column("Name", style="cyan", no_wrap=True)
-        table.add_column("Port", justify="right", style="magenta")
-        table.add_column("Active", justify="center")
-        table.add_column("Healthy", justify="center")
-        table.add_column("Response (ms)", justify="right")
-        table.add_column("Error")
-
-        for row in results:
-            active_str = "[green]yes[/green]" if row["active"] else "[dim]no[/dim]"
-            healthy_str = "[green]yes[/green]" if row["healthy"] else "[red]no[/red]"
-            resp_str = str(row["response_time_ms"]) if row["response_time_ms"] is not None else "-"
-            error_str = row["error"] or ""
-
-            table.add_row(
-                row["name"],
-                str(row["port"]),
-                active_str,
-                healthy_str,
-                resp_str,
-                error_str,
-            )
-
-        console = Console()
-        with console.capture() as capture:
-            console.print(table)
-        return capture.get()
-
-    except Exception:
-        pass
-
-    # ---- Plain-text fallback ----------------------------------------------
-    header = (
-        f"{'NAME':<20} {'PORT':>6} {'ACTIVE':>8} {'HEALTHY':>8} {'RESP(ms)':>10}  ERROR"
-    )
-    separator = "-" * len(header)
-    lines = [header, separator]
-
-    for row in results:
-        active_str = "yes" if row["active"] else "no"
-        healthy_str = "yes" if row["healthy"] else "no"
-        resp_str = str(row["response_time_ms"]) if row["response_time_ms"] is not None else "-"
-        error_str = row["error"] or ""
-        lines.append(
-            f"{row['name']:<20} {row['port']:>6} {active_str:>8} {healthy_str:>8} {resp_str:>10}  {error_str}"
-        )
-
-    return "\n".join(lines)

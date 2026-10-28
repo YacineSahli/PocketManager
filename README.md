@@ -114,7 +114,6 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
     "max": 8999
   },
   "pangolin": {
-    "dashboard_url": "https://apps.example.com",
     "api_url": "http://localhost:3003/v1",
     "api_key": "",
     "org_id": "",
@@ -191,6 +190,8 @@ pm config set port_range.min 7000  # Change port range start
 |---------|-------------|
 | `pm create <name>` | Create a new instance (interactive mode) |
 | `pm create <name> -p 8110 -d pb.example.com -e KEY=VAL` | Create with explicit options |
+| `pm modify <name> -p 8110 -e KEY=VAL --rm-env KEY` | Change the port or environment variables on an existing instance (regenerates its systemd unit); restarts unless `--no-restart` is given |
+| `pm modify <name> --domain pb.example.com` | Set or change the public domain of an existing instance and create its Pangolin resource |
 | `pm ls` | List all instances with status |
 | `pm start <name>` | Start a stopped instance |
 | `pm stop <name>` | Stop a running instance |
@@ -200,7 +201,7 @@ pm config set port_range.min 7000  # Change port range start
 | `pm remove <name> --force` | Skip confirmation prompts |
 | `pm status <name>` | Show detailed instance information (includes Pangolin auth status) |
 | `pm auth <name>` | Show Pangolin authentication status for an instance |
-| `pm auth <name> --password <pw>` | Set password authentication on the Pangolin resource |
+| `pm auth <name> --password` | Set password authentication on the Pangolin resource (prompts for the password with hidden input) |
 | `pm auth <name> --no-password` | Remove password authentication from the Pangolin resource |
 | `pm info` | Show system and PocketManager information |
 
@@ -212,6 +213,8 @@ pm config set port_range.min 7000  # Change port range start
 | `pm logs <name> -f` | Follow (tail) logs in real time |
 | `pm logs <name> -n 50` | Show the last 50 log lines |
 | `pm healthcheck` | Check health of all instances |
+
+> **Note:** `pm logs` reads the systemd journal. If journal access fails, the underlying error is reported instead of a generic "No logs found" message.
 
 ### Backups
 
@@ -225,7 +228,7 @@ pm config set port_range.min 7000  # Change port range start
 > You will be prompted for the superadmin email and password (the same ones you
 > set up via the PocketBase Admin UI at `http://localhost:<port>/_/`). Credentials
 > are verified against the live instance and stored in the instance state file
-> (owner-only readable, `0600` permissions).
+> with `0600`-style restricted permissions (mode `0660`).
 >
 > **Tip:** Create a dedicated backup superadmin in the PocketBase Admin UI (e.g.
 > `pm-backup@instance`) and use that for `pm credentials`. This keeps your personal
@@ -242,6 +245,7 @@ pm config set port_range.min 7000  # Change port range start
 | `pm backups <name> --remote` | List backups on the SFTP server |
 | `pm push-backup <name> [key]` | Upload a backup to SFTP |
 | `pm restore <name> <key>` | Restore an instance from a specific backup |
+| `pm restore <name> <key> --yes` | Restore without asking for confirmation (non-interactive) |
 | `pm backup-all` | Create a backup of all instances |
 | `pm backup-all --push` | Create backups and push all to SFTP |
 | `pm local-backup-schedule <name>` | Show/configure local backup schedule |
@@ -249,14 +253,19 @@ pm config set port_range.min 7000  # Change port range start
 | `pm sftp-config` | Show/configure SFTP connection settings |
 | `pm sftp-config --test` | Test SFTP connection |
 
+> **Note:** `pm backup-all`, `pm healthcheck`, and `pm update-all` exit with a non-zero status when any instance fails, so they are safe to use in scripts and systemd timers.
+
 ### Updates
 
 | Command | Description |
 |---------|-------------|
 | `pm update <name>` | Update the PocketBase binary for an instance |
 | `pm update <name> --version 0.22.0` | Update to a specific PocketBase version |
-| `pm update-all` | Update all instances to the latest PocketBase version |
+| `pm update-all` | Update all instances to the latest PocketBase version (asks for confirmation; skips instances already at the target version) |
+| `pm update-all --yes` | Update all instances without asking for confirmation |
 | `pm self-update` | Update PocketManager itself to the latest release |
+| `pm self-update --yes` | Update PocketManager without asking for confirmation |
+| `pm doctor` | Run post-update migrations: rebind instances to the configured `bind_host` and remove legacy root-crontab SFTP entries (asks before restarting instances; `--yes` skips) |
 
 ### Other
 
@@ -307,7 +316,8 @@ When starting interactively without a password, you will be prompted. In daemon 
 
 - **Instance management** -- create, start, stop, restart, and remove instances
 - **Health monitoring** -- view real-time health status for all instances
-- **Backup management** -- create, list, and restore backups
+- **Backup management** -- create and list backups
+- **Backup credentials** -- the dashboard prompts for the instance superadmin credentials when a backup action requires them
 - **Logs viewer** -- browse instance logs from the browser
 
 ---
@@ -466,7 +476,7 @@ When a Pangolin resource is created, SSO authentication is enabled by default. U
 
 ```bash
 pm auth myapp                          # View current auth status
-pm auth myapp --password s3cret        # Set password authentication
+pm auth myapp --password               # Set password authentication (secure hidden prompt)
 pm auth myapp --no-password            # Remove password authentication
 ```
 
@@ -502,10 +512,10 @@ The file naming convention is `pb_backup_acme_<YYYYMMDDHHMMSS>.zip` (auto-genera
 
 > **Note:** The `acme` part in the name is PocketBase's internal default identifier. The timestamp uses UTC.
 
-When you use `--download`, the backup file is additionally copied to the **instance directory** (not the backups subfolder):
+When you use `--download`, the backup file is additionally copied to the **current working directory** (the instance directory itself is owned by the service user, so it is not used as a download target):
 
 ```
-~/pocketbases/pocketbase-myapp/pb_backup_acme_20260530143000.zip
+./pb_backup_acme_20260530143000.zip
 ```
 
 ### First-Time Setup
@@ -521,7 +531,7 @@ Then register those credentials with PocketManager:
 pm credentials myapp
 ```
 
-You will be prompted for the superadmin email and password. PocketManager verifies them against the live instance and stores them securely (owner-only `0600` permissions in the instance state file). Once configured, all backup commands authenticate automatically.
+You will be prompted for the superadmin email and password. PocketManager verifies them against the live instance and stores them in the instance state file with `0600`-style restricted permissions (mode `0660`). Once configured, all backup commands authenticate automatically.
 
 > **Tip:** It's recommended to create a **dedicated backup superadmin** (e.g. `pm-backup@myapp`) in the PocketBase Admin UI and use that for `pm credentials` instead of your personal account. This way:
 > - Changing your main superadmin password won't break automated backups
@@ -552,7 +562,7 @@ pm backup myapp --download                      # Create and download the latest
 pm backup myapp --download --name before-update # Create a named backup and download it
 ```
 
-The `--download` flag creates a backup and then downloads it to the instance directory (`~/pocketbases/pocketbase-<name>/`). The downloaded file is a standard zip archive that you can copy off-server for disaster recovery.
+The `--download` flag creates a backup and then downloads it to the **current working directory**. The downloaded file is a standard zip archive that you can copy off-server for disaster recovery.
 
 ### Restoring Backups
 
@@ -564,6 +574,12 @@ Use the backup key shown by `pm backups` (e.g. `pb_backup_acme_20260530143000.zi
 
 1. **Replaces** the current `pb_data` with the backup data
 2. **Restarts** the instance automatically to load the restored data
+
+`pm restore` asks for confirmation before restoring. For non-interactive use (e.g. scripts), pass `--yes`:
+
+```bash
+pm restore myapp pb_backup_acme_20260530143000.zip --yes
+```
 
 > **Warning:** Restore is destructive — the current database is replaced. Always create a fresh backup before restoring:
 >
@@ -619,10 +635,10 @@ pm backups myapp
 # Key                                Modified                Size
 # pb_backup_acme_20260530143000.zip  2026-05-30 14:30:00     2.1 MB
 
-# 4. Download a copy off-server
+# 4. Download a copy off-server (saved to the current working directory)
 pm backup myapp --download
 
-# 5. Restore if something goes wrong
+# 5. Restore if something goes wrong (add --yes to skip the confirmation prompt)
 pm restore myapp pb_backup_acme_20260530143000.zip
 # Output: Backup restored. Instance will restart automatically.
 ```
@@ -653,7 +669,13 @@ pm sftp-config \
 2. **Set the password (you'll be prompted securely):**
 
 ```bash
-pm sftp-config --password
+pm sftp-config --prompt-password
+```
+
+   Alternatively, pass the password inline (visible in shell history — prefer the prompt above):
+
+```bash
+pm sftp-config --password YOUR_PASSWORD
 ```
 
    Alternatively, use SSH key-based auth:
@@ -736,7 +758,8 @@ pm sftp-config --max-remote-backups 14
 | `--host` | _(empty)_ | SFTP server hostname |
 | `--port` | `22` | SFTP port |
 | `--username` | _(empty)_ | SFTP username |
-| `--password` | _(empty)_ | SFTP password |
+| `--password` | _(empty)_ | SFTP password (visible in shell history — prefer `--prompt-password`) |
+| `--prompt-password` | — | Prompt for the SFTP password with hidden input |
 | `--private-key` | _(empty)_ | Path to SSH private key |
 | `--remote-path` | `backups` | Remote directory root (relative to SFTP home) |
 | `--max-remote-backups` | `30` | Max backups per instance |
@@ -803,7 +826,7 @@ View logs with:
 journalctl -u pm-sftp-backup.service
 ```
 
-The timer automatically cleans up any legacy root crontab entries from older PocketManager versions.
+Legacy root crontab entries from older PocketManager versions are **not** removed automatically on update — run `pm doctor` or re-enable this schedule (`pm sftp-backup-schedule --enable`) to clean them up.
 
 #### Monitoring Backup Status
 
@@ -836,14 +859,29 @@ The **Local Backup** column queries PocketBase's actual backup cron setting (not
 PocketManager can update itself to the latest release from GitHub:
 
 ```bash
-pm self-update
+pm self-update          # asks for confirmation before updating
+pm self-update --yes    # non-interactive (e.g. from scripts)
 ```
 
 The command:
 
 1. Compares the latest commit on GitHub with the locally installed commit
-2. If a newer commit is found, displays the incoming commits and asks for confirmation
+2. If a newer commit is found, displays the incoming commits and asks for confirmation (skipped with `--yes`)
 3. Reinstalls the package via `pip install --force-reinstall --no-cache-dir`
+
+### Upgrading
+
+After `pm self-update`, run:
+
+```bash
+pm doctor
+```
+
+`pm doctor` applies post-update migrations and reports what changed:
+
+- **Rebinds instances to the configured `bind_host`** by regenerating their systemd unit files — important for installs from before 2026-10-28, whose instances were bound to `0.0.0.0`
+- **Removes the legacy root-crontab SFTP job** from older PocketManager versions (see [SFTP Backup Schedule](#sftp-backup-schedule))
+- Asks for confirmation before restarting any instance; pass `--yes` to skip
 
 You can check the current version at any time:
 

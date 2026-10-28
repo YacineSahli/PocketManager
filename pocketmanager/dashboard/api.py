@@ -67,11 +67,28 @@ def create_instance():
     name = data.get("name")
     if not name:
         return jsonify({"error": "Field 'name' is required"}), 400
+
+    domain = data.get("domain")
+    if not domain and data.get("subdomain"):
+        from pocketmanager.core.config import get
+
+        default_domain = get("pangolin.default_domain", "")
+        if not default_domain:
+            return jsonify(
+                {
+                    "error": (
+                        "Subdomain given but pangolin.default_domain is not "
+                        "configured — set it or provide a full domain"
+                    )
+                }
+            ), 400
+        domain = f"{data['subdomain']}.{default_domain}"
+
     try:
         instance = create_instance(
             name=name,
             port=data.get("port"),
-            domain=data.get("domain"),
+            domain=domain,
             env=data.get("env"),
             version=data.get("version"),
             pangolin=data.get("pangolin", True),
@@ -107,9 +124,13 @@ def start_instance(name):
 
     try:
         result = start_instance(name)
-        return jsonify({"success": result})
+        if result:
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Service failed to start"})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # POST /api/instances/<name>/stop
@@ -133,21 +154,45 @@ def restart_instance(name):
 
     try:
         result = restart_instance(name)
-        return jsonify({"success": result})
+        if result:
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Service failed to restart"})
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # GET /api/instances/<name>/logs
 @api.route("/instances/<name>/logs", methods=["GET"])
 @requires_auth
 def get_logs(name):
+    from pocketmanager.core.state import get_instance
     from pocketmanager.core.systemd import get_journal_logs
+
+    if not get_instance(name):
+        return jsonify({"error": "Unknown instance"}), 404
 
     lines = request.args.get("lines", 100, type=int)
     lines = min(max(lines, 1), 1000)  # cap — don't stream the whole journal
     logs = get_journal_logs(name, lines=lines)
     return jsonify({"logs": logs})
+
+
+# GET /api/instances/<name>/health - Health check a single instance
+@api.route("/instances/<name>/health", methods=["GET"])
+@requires_auth
+def instance_health(name):
+    from pocketmanager.core.health import check_instance_health
+    from pocketmanager.core.state import get_instance
+
+    inst = get_instance(name)
+    if not inst:
+        return jsonify({"error": "Instance not found"}), 404
+    try:
+        return jsonify(check_instance_health(inst["port"]))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
 
 # GET /api/instances/<name>/backups
@@ -163,10 +208,15 @@ def list_backups(name):
     inst = get_instance(name)
     if not inst:
         return jsonify({"error": "Instance not found"}), 404
+    if not inst.get("superadmin_email") or not inst.get("superadmin_password"):
+        # No stored credentials — answer without hitting the instance.
+        return jsonify({"backups": [], "auth": False, "error": "credentials_required"})
     url = f"http://localhost:{inst['port']}"
     token = get_instance_auth_token(name)
+    if token is None:
+        return jsonify({"backups": [], "auth": False, "error": "credentials_required"})
     backups = pb_list_backups(url, auth_token=token)
-    return jsonify({"backups": backups or [], "auth": token is not None})
+    return jsonify({"backups": backups or [], "auth": True})
 
 
 # POST /api/instances/<name>/backup

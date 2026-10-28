@@ -113,12 +113,19 @@ check_requirements() {
 install_pm() {
     step 2 "Installing PocketManager..."
 
+    # --break-system-packages requires pip >= 23.0; stock Ubuntu 22.04 ships
+    # pip 22.0.2 which rejects the flag, so detect support once and reuse it.
+    local pip_flags=""
+    if python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages; then
+        pip_flags="--break-system-packages"
+    fi
+
     # Install for the current user (--user flag)
-    if python3 -m pip install --user --break-system-packages --force-reinstall --no-cache-dir "$REPO_URL"; then
+    if python3 -m pip install --user $pip_flags --force-reinstall --no-cache-dir "$REPO_URL"; then
         info "PocketManager installed successfully."
     else
         error "Failed to install PocketManager via pip."
-        echo -e "  Try manually: ${BOLD}python3 -m pip install --user --break-system-packages $REPO_URL${NC}"
+        echo -e "  Try manually: ${BOLD}python3 -m pip install --user $pip_flags $REPO_URL${NC}"
         exit 1
     fi
 
@@ -226,13 +233,16 @@ setup_pangolin() {
 
     # Check if Pangolin is already configured
     if [[ -f "$config_file" ]]; then
-        local has_key has_org has_domain has_site
+        local has_key has_org has_domain has_site has_api_url has_base_domain
         has_key=$(jq -r '.pangolin.api_key // ""' "$config_file" 2>/dev/null)
         has_org=$(jq -r '.pangolin.org_id // ""' "$config_file" 2>/dev/null)
         has_domain=$(jq -r '.pangolin.default_domain_id // ""' "$config_file" 2>/dev/null)
         has_site=$(jq -r '.pangolin.site_id // ""' "$config_file" 2>/dev/null)
+        has_api_url=$(jq -r '.pangolin.api_url // ""' "$config_file" 2>/dev/null)
+        has_base_domain=$(jq -r '.pangolin.default_domain // ""' "$config_file" 2>/dev/null)
 
-        if [[ -n "$has_key" && -n "$has_org" && -n "$has_domain" && -n "$has_site" ]]; then
+        if [[ -n "$has_key" && -n "$has_org" && -n "$has_domain" && -n "$has_site" \
+              && -n "$has_api_url" && -n "$has_base_domain" ]]; then
             info "Pangolin is already fully configured. Skipping setup."
             return
         fi
@@ -266,7 +276,13 @@ setup_pangolin() {
     echo ""
 
     # Collect values
-    local api_key="" org_id="" domain_id="" site_id=""
+    local api_url="" api_key="" org_id="" domain_id="" base_domain="" site_id=""
+
+    read -rp "  Integration API URL [http://localhost:3003/v1]: " api_url
+    api_url="${api_url// /}"  # trim spaces
+    if [[ -z "$api_url" ]]; then
+        api_url="http://localhost:3003/v1"
+    fi
 
     read -rp "  API Key: " api_key
     api_key="${api_key// /}"  # trim spaces
@@ -289,6 +305,13 @@ setup_pangolin() {
         return
     fi
 
+    read -rp "  Base domain (e.g. example.com): " base_domain
+    base_domain="${base_domain// /}"
+    if [[ -z "$base_domain" ]]; then
+        warn "No base domain provided. Skipping Pangolin setup."
+        return
+    fi
+
     read -rp "  Site ID: " site_id
     site_id="${site_id// /}"
     if [[ -z "$site_id" ]]; then
@@ -296,16 +319,30 @@ setup_pangolin() {
         return
     fi
 
-    # Write values via pm config set
-    pm config set pangolin.api_key "$api_key" 2>/dev/null && \
-    pm config set pangolin.org_id "$org_id" 2>/dev/null && \
-    pm config set pangolin.default_domain_id "$domain_id" 2>/dev/null && \
-    pm config set pangolin.site_id "$site_id" 2>/dev/null
+    # Write values via pm config set, one key at a time with individual
+    # checks — a && chain would abort the whole script under `set -e`
+    # before we could report which key failed.
+    local keys=(pangolin.api_url pangolin.api_key pangolin.org_id \
+                pangolin.default_domain_id pangolin.default_domain pangolin.site_id)
+    local values=("$api_url" "$api_key" "$org_id" "$domain_id" "$base_domain" "$site_id")
+    local failed_keys=()
 
-    if [[ $? -eq 0 ]]; then
+    local i key
+    for i in "${!keys[@]}"; do
+        key="${keys[$i]}"
+        if pm config set "$key" "${values[$i]}"; then
+            info "Set ${key}"
+        else
+            error "Failed to set ${key}."
+            failed_keys+=("$key")
+        fi
+    done
+
+    if [[ ${#failed_keys[@]} -eq 0 ]]; then
         info "Pangolin configured successfully."
     else
-        warn "Failed to write Pangolin config. Set it manually with 'pm config set'."
+        warn "Failed to write: ${failed_keys[*]}"
+        warn "Set them manually with 'pm config set <key> <value>'."
     fi
 }
 
@@ -325,16 +362,21 @@ print_success() {
     echo -e "    pm dashboard           Launch the web dashboard"
     echo -e "    pm self-update         Update to the latest version"
     echo ""
+    echo -e "  ${BOLD}Note:${NC} ~/.local/bin was only just added to your PATH."
+    echo -e "  If ${BOLD}pm${NC} is not found, open a new shell or run ${BOLD}source ~/.bashrc${NC}."
+    echo ""
 
     # Check if Pangolin is configured
     local pangolin_ready="no"
     if [[ -f "$CONFIG_DIR/config.json" ]]; then
-        local _pk _po _pd _ps
+        local _pk _po _pd _ps _pu _pbd
         _pk=$(jq -r '.pangolin.api_key // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
         _po=$(jq -r '.pangolin.org_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
         _pd=$(jq -r '.pangolin.default_domain_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
         _ps=$(jq -r '.pangolin.site_id // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
-        if [[ -n "$_pk" && -n "$_po" && -n "$_pd" && -n "$_ps" ]]; then
+        _pu=$(jq -r '.pangolin.api_url // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
+        _pbd=$(jq -r '.pangolin.default_domain // ""' "$CONFIG_DIR/config.json" 2>/dev/null)
+        if [[ -n "$_pk" && -n "$_po" && -n "$_pd" && -n "$_ps" && -n "$_pu" && -n "$_pbd" ]]; then
             pangolin_ready="yes"
         fi
     fi
@@ -353,9 +395,11 @@ print_success() {
         echo -e "       (found in Organization settings, Domains, and Sites)"
         echo -e "    4. Run:"
         echo ""
+        echo -e "       ${BOLD}pm config set pangolin.api_url http://localhost:3003/v1${NC}"
         echo -e "       ${BOLD}pm config set pangolin.api_key YOUR_KEY${NC}"
         echo -e "       ${BOLD}pm config set pangolin.org_id YOUR_ORG_ID${NC}"
         echo -e "       ${BOLD}pm config set pangolin.default_domain_id YOUR_DOMAIN_ID${NC}"
+        echo -e "       ${BOLD}pm config set pangolin.default_domain example.com${NC}"
         echo -e "       ${BOLD}pm config set pangolin.site_id YOUR_SITE_ID${NC}"
     fi
     echo ""

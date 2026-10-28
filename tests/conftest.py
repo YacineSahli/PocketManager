@@ -4,31 +4,22 @@ Key design decisions:
 - Uses POCKETMANAGER_HOME env var to isolate config/state per test
 - Downloads PocketBase binary once per session (expensive)
 - Runs PocketBase as a subprocess (no systemd/sudo required)
-- Mocks systemd module functions for instance creation tests
+- Systemd mocking lives in per-file fixtures (see test_cli.py / test_unit_core.py)
 - Uses a high port range (9090-9999) to avoid conflicts
 """
 
 from __future__ import annotations
 
 import json
-import os
-import signal
 import socket
 import subprocess
 import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-
-from pocketmanager.core import config as config_mod
-from pocketmanager.core import instance as instance_mod
-from pocketmanager.core import ports as ports_mod
-from pocketmanager.core import state as state_mod
-from pocketmanager.core import systemd as systemd_mod
 
 
 # ---------------------------------------------------------------------------
@@ -268,72 +259,6 @@ def pb_runner(pocketbase_binary, isolated_env):
     runner.start()
     yield runner
     runner.stop()
-
-
-# ---------------------------------------------------------------------------
-# Systemd mocking fixture
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def mock_systemd():
-    """Patch all systemd functions that require sudo/root.
-
-    Returns a dict of mock objects for assertions:
-        - user_mock, perms_mock, caps_mock
-        - create_svc_mock, start_svc_mock, stop_svc_mock
-        - restart_svc_mock, remove_svc_mock, active_mock, status_mock
-    """
-    mocks = {}
-
-    # System user
-    mocks["user_mock"] = MagicMock(return_value=True)
-    # Permissions
-    mocks["perms_mock"] = MagicMock()
-    # Capabilities
-    mocks["caps_mock"] = MagicMock()
-    # Service creation
-    mocks["create_svc_mock"] = MagicMock(
-        return_value=Path("/etc/systemd/system/pocketbase-test.service")
-    )
-    # Service control
-    mocks["start_svc_mock"] = MagicMock(return_value=True)
-    mocks["stop_svc_mock"] = MagicMock(return_value=True)
-    mocks["restart_svc_mock"] = MagicMock(return_value=True)
-    mocks["remove_svc_mock"] = MagicMock(return_value=True)
-    # Status
-    mocks["active_mock"] = MagicMock(return_value=False)
-    mocks["status_mock"] = MagicMock(
-        return_value={
-            "active": False,
-            "status_text": "unknown",
-            "uptime_seconds": None,
-            "pid": None,
-        }
-    )
-
-    patches = [
-        patch.object(systemd_mod, "ensure_pocketbase_user", mocks["user_mock"]),
-        patch.object(systemd_mod, "set_permissions", mocks["perms_mock"]),
-        patch.object(systemd_mod, "set_capabilities", mocks["caps_mock"]),
-        patch.object(systemd_mod, "create_service", mocks["create_svc_mock"]),
-        patch.object(systemd_mod, "start_service", mocks["start_svc_mock"]),
-        patch.object(systemd_mod, "stop_service", mocks["stop_svc_mock"]),
-        patch.object(systemd_mod, "restart_service", mocks["restart_svc_mock"]),
-        patch.object(systemd_mod, "remove_service", mocks["remove_svc_mock"]),
-        patch.object(systemd_mod, "is_active", mocks["active_mock"]),
-        patch.object(systemd_mod, "get_status", mocks["status_mock"]),
-        patch.object(instance_mod, "_create_superadmin", return_value=None),
-    ]
-
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        yield mocks
-
-
-# Re-export contextlib.ExitStack for the mock_systemd fixture
-from contextlib import ExitStack
 
 
 # ---------------------------------------------------------------------------

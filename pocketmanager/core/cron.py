@@ -76,6 +76,10 @@ def _cron_field_to_systemd(field: str, lo: int, hi: int, kind: str) -> str:
             if va > vb:
                 raise ValueError(f"inverted cron range {tok!r}")
             if kind == "dow":
+                # A 7-day range (0-6, 1-7, 0-7, …) covers the whole week —
+                # plain "*" instead of a day-name range.
+                if vb - va >= 6:
+                    return "*"
                 return f"{_DOW_NAMES[va % 7]}..{_DOW_NAMES[vb % 7]}"
             return f"{fmt(va)}..{fmt(vb)}"
         v = single(tok)
@@ -290,6 +294,11 @@ def _cleanup_legacy_crontab() -> None:
 # ---------------------------------------------------------------------------
 # Public API (same interface as before)
 # ---------------------------------------------------------------------------
+
+
+def cleanup_legacy_crontab() -> None:
+    """Public wrapper for :func:`_cleanup_legacy_crontab` (used by ``pm doctor``)."""
+    _cleanup_legacy_crontab()
 
 
 def get_sftp_cron() -> dict[str, Any]:

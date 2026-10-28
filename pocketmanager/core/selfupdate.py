@@ -76,11 +76,13 @@ def _fetch_commit_log(local_hash: str, remote_hash: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_current_version() -> str:
-    """Return the currently installed PocketManager version."""
-    from pocketmanager import __version__  # noqa: WPS433
+def has_version_marker() -> bool:
+    """Return ``True`` if the installed package carries a commit marker.
 
-    return __version__
+    Installs from before commit tracking (or manual copies without
+    ``commit.txt``) cannot compare against GitHub — they must reinstall.
+    """
+    return bool(_read_local_commit())
 
 
 def check_for_update() -> dict | None:
@@ -131,15 +133,19 @@ def perform_update() -> bool:
         return False
 
     try:
+        # --break-system-packages only exists on pip 23+; older pip (e.g. the
+        # 22.0.2 shipped with Ubuntu 22.04) rejects it as an unknown option.
+        cmd = [
+            sys.executable, "-m", "pip", "install",
+            "--user",
+            "--force-reinstall",
+            "--no-cache-dir",
+        ]
+        if _pip_break_system_packages_supported():
+            cmd.append("--break-system-packages")
+        cmd.append(_REPO_URL)
         result = subprocess.run(
-            [
-                sys.executable, "-m", "pip", "install",
-                "--user",
-                "--break-system-packages",
-                "--force-reinstall",
-                "--no-cache-dir",
-                _REPO_URL,
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=120,

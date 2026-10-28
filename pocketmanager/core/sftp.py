@@ -492,7 +492,7 @@ def cleanup_remote_backups(
         return 0, []
 
     entries: list[dict[str, Any]] = result  # type: ignore[assignment]
-    if max_keep is None or len(entries) <= max_keep:
+    if len(entries) <= max_keep:
         return 0, []
 
     to_delete = entries[max_keep:]  # oldest entries (already sorted desc)

@@ -257,6 +257,20 @@ class TestState:
             assert inst["name"] == name
             assert inst["port"] == port
 
+    def test_meta_round_trip(self, isolated_env):
+        """set_meta()/get_meta() persist top-level flags in the state file."""
+        from pocketmanager.core.state import get_meta, set_meta
+
+        assert get_meta("doctor_bind_host_migrate") is None  # nothing set yet
+        assert get_meta("missing_key", "fallback") == "fallback"
+
+        set_meta("doctor_bind_host_migrate", "2026-10-28T12:00:00Z")
+        assert get_meta("doctor_bind_host_migrate") == "2026-10-28T12:00:00Z"
+
+        # Overwrites in place
+        set_meta("doctor_bind_host_migrate", "2026-10-29T00:00:00Z")
+        assert get_meta("doctor_bind_host_migrate") == "2026-10-29T00:00:00Z"
+
     def test_state_file_permissions(self, isolated_env):
         """After saving state, instances.json should have group-readable (0o660) permissions."""
         import stat

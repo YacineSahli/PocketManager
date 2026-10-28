@@ -243,3 +243,21 @@ def update_instance(
                 return inst
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Migration / maintenance flags
+# ---------------------------------------------------------------------------
+
+
+def get_meta(key: str, default: Any = None) -> Any:
+    """Read a top-level maintenance flag from the state file."""
+    return load_state().get("meta", {}).get(key, default)
+
+
+def set_meta(key: str, value: Any) -> None:
+    """Write a top-level maintenance flag to the state file."""
+    with _state_lock():
+        state = load_state()
+        state.setdefault("meta", {})[key] = value
+        save_state(state)

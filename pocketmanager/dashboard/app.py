@@ -36,8 +36,3 @@ def create_app() -> Flask:
         )
 
     return app
-
-
-def run_server(host: str = "127.0.0.1", port: int = 8888, debug: bool = False):
-    app = create_app()
-    app.run(host=host, port=port, debug=debug)
