@@ -152,7 +152,7 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 | `port_range` | Min/max port range for automatic port allocation |
 | `pangolin.api_url` | Pangolin **Integration API** base URL. Use `http://localhost:3003/v1` for same-host (recommended) or `https://api.example.com/v1` for public access |
 | `pangolin.api_key` | API key for your Pangolin instance |
-| `pangolin.org_id` | Organization ID in Pangolin (text ID, e.g. `yacine`) |
+| `pangolin.org_id` | Organization ID in Pangolin (text ID, e.g. `yourname`) |
 | `pangolin.default_domain_id` | Domain ID to use for subdomain-based instances (e.g. `domain1`) |
 | `pangolin.default_domain` | **Full base domain** used to build public URLs (e.g. `example.com`). Subdomains are derived by stripping this from the instance domain |
 | `pangolin.site_id` | Site ID for Pangolin resource creation (the site connected to your VPS). Can be a text niceId (e.g. `brilliant-meadow-vole`) or numeric ID |
@@ -436,7 +436,7 @@ Set all values in PocketManager:
 # Integration API — use localhost for same-host (recommended) or public URL
 pm config set pangolin.api_url http://localhost:3003/v1
 pm config set pangolin.api_key YOUR_API_KEY
-pm config set pangolin.org_id YOUR_ORG_ID             # text ID from Pangolin (e.g. "yacine")
+pm config set pangolin.org_id YOUR_ORG_ID             # text ID from Pangolin (e.g. "yourname")
 pm config set pangolin.default_domain_id YOUR_DOMAIN_ID # domain ID from Pangolin (e.g. "domain1")
 pm config set pangolin.site_id brilliant-meadow-vole        # text niceId or numeric site ID from Pangolin
 pm config set pangolin.default_domain example.com        # base domain (root, no subdomain prefix)
