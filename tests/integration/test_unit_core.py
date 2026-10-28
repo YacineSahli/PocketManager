@@ -782,3 +782,41 @@ class TestBackupHttpErrors:
         get_mock.assert_called_once_with(
             "http://localhost:8090/api/health", timeout=3.0
         )
+
+
+class TestSelfUpdatePipFlags:
+    """perform_update must pass --break-system-packages only on pip 23+."""
+
+    @staticmethod
+    def _perform(captured, returncode=0):
+        from subprocess import CompletedProcess
+
+        from pocketmanager.core import selfupdate as su
+
+        def fake_run(cmd, **kwargs):
+            if "--help" in cmd:
+                return CompletedProcess(cmd, 0, stdout="--break-system-packages")
+            captured.extend(cmd)
+            return CompletedProcess(cmd, returncode)
+
+        with patch.object(su, "subprocess") as fake_subprocess, \
+                patch.object(su, "_fetch_remote_commit", return_value="abc123"):
+            fake_subprocess.run = fake_run
+            fake_subprocess.TimeoutExpired = Exception
+            return su.perform_update()
+
+    def test_flag_included_when_supported(self):
+        """pip 23+ gets the flag in the install command."""
+        captured: list = []
+        assert self._perform(captured) is True
+        assert "--break-system-packages" in captured
+        assert "--force-reinstall" in captured
+
+    def test_flag_omitted_when_unsupported(self, monkeypatch):
+        """Old pip (Ubuntu 22.04's 22.0.2) must not receive the flag."""
+        from pocketmanager.core import selfupdate as su
+
+        monkeypatch.setattr(su, "_pip_break_system_packages_supported", lambda: False)
+        captured: list = []
+        assert self._perform(captured) is True
+        assert "--break-system-packages" not in captured

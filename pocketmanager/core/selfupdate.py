@@ -85,6 +85,21 @@ def has_version_marker() -> bool:
     return bool(_read_local_commit())
 
 
+def _pip_break_system_packages_supported() -> bool:
+    """Return ``True`` if this pip knows ``--break-system-packages`` (pip 23+)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return "--break-system-packages" in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def check_for_update() -> dict | None:
     """Check whether a newer version is available on GitHub.
 
