@@ -799,11 +799,16 @@ class TestSelfUpdatePipFlags:
             captured.extend(cmd)
             return CompletedProcess(cmd, returncode)
 
+        # _write_local_commit MUST be patched — it writes into the real
+        # package's commit.txt (this test once clobbered the actual marker).
         with patch.object(su, "subprocess") as fake_subprocess, \
-                patch.object(su, "_fetch_remote_commit", return_value="abc123"):
+                patch.object(su, "_fetch_remote_commit", return_value="abc123"), \
+                patch.object(su, "_write_local_commit") as write_marker:
             fake_subprocess.run = fake_run
             fake_subprocess.TimeoutExpired = Exception
-            return su.perform_update()
+            result = su.perform_update()
+            write_marker.assert_called_once_with("abc123")
+            return result
 
     def test_flag_included_when_supported(self):
         """pip 23+ gets the flag in the install command."""
