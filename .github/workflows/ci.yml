@@ -29,6 +29,9 @@ jobs:
       - name: Compile check
         run: python -m compileall pocketmanager
 
+      - name: Lint (ruff)
+        run: ruff check pocketmanager tests
+
       - name: Run tests
         run: python -m pytest tests -v --tb=short
 

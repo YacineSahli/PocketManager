@@ -895,7 +895,16 @@ pm --version
 
 ```
 pocketmanager/
-  cli.py                  # Click CLI with all commands
+  cli/                    # Click CLI (one module per command group)
+    __init__.py           # Re-exports `cli`; imports command modules
+    common.py             # Shared group, console, formatters, auth helpers
+    instances.py          # create/ls/start/stop/restart/modify/remove/…
+    backups.py            # backup/backups/restore/push-backup/backup-all/…
+    sftp_cmd.py           # sftp-config, sftp-backup-schedule
+    updates.py            # update, update-all, self-update, migrate-existing
+    config_cmd.py         # config
+    dashboard_cmd.py      # dashboard
+    credentials_auth.py   # credentials, auth (Pangolin)
   core/
     config.py             # Configuration management
     state.py              # Instance state (instances.json)
@@ -906,7 +915,7 @@ pocketmanager/
     pangolin.py           # Pangolin API client
     backup.py             # Backup API wrapper
     sftp.py               # SFTP off-site backup storage
-    cron.py               # System cron management
+    cron.py               # Systemd timer management
     health.py             # Health checking
     selfupdate.py         # Self-update mechanism
   dashboard/
@@ -917,7 +926,7 @@ pocketmanager/
       dashboard.html      # Single-page dashboard
 ```
 
-- **cli.py** -- Entry point. Defines all `pm` commands using [Click](https://click.palletsprojects.com/).
+- **cli/** -- Entry point. A Click package: every module registers its commands on the shared `cli` group from `common.py` (which also holds the shared console, formatters, and the backup-auth/SFTP-config helpers).
 - **core/config.py** -- Manages `config.json` with dot-notation get/set, deep-merging with defaults, and atomic file writes.
 - **core/state.py** -- Persists instance metadata (name, port, version, status) in `instances.json`.
 - **core/instance.py** -- Orchestrates the full instance lifecycle (create, start, stop, remove, update, migrate).
