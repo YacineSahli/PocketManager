@@ -39,7 +39,13 @@ def _default_config() -> dict[str, Any]:
     return {
         "base_dir": f"{home}/pocketbases",
         "cache_dir": f"{home}/.pocketmanager/cache",
+        # Addresses services bind to. Loopback by default — expose instances
+        # through the Pangolin reverse proxy on the same host instead of
+        # opening ports directly. Set to 0.0.0.0 only if you firewall the
+        # ports yourself.
+        "bind_host": "127.0.0.1",
         "dashboard_port": 8888,
+        "dashboard_host": "127.0.0.1",
         "dashboard_password": "",
         "dashboard_pangolin_resource_id": "",
         "port_range": {"min": 8090, "max": 8999},
@@ -67,6 +73,7 @@ def _default_config() -> dict[str, Any]:
             "private_key_path": "",
             "remote_path": "backups",
             "max_remote_backups": 30,
+            "host_key_fingerprint": "",
         },
     }
 

@@ -119,8 +119,15 @@ def create_backup(
         return False
 
 
-def get_backup_cron_status(instance_url: str) -> dict[str, Any]:
+def get_backup_cron_status(
+    instance_url: str,
+    *,
+    auth_token: str | None = None,
+) -> dict[str, Any]:
     """Query PocketBase's backup cron configuration.
+
+    ``GET /api/settings`` requires superuser authentication — pass a token
+    from :func:`get_instance_auth_token`; without one this always fails.
 
     Returns a dict with:
       - ``enabled``: bool — whether a cron expression is set
@@ -129,8 +136,12 @@ def get_backup_cron_status(instance_url: str) -> dict[str, Any]:
     Returns ``{"enabled": False, "cron": "", "max_keep": 0}`` on failure.
     """
     try:
+        headers: dict[str, str] = {}
+        if auth_token:
+            headers["Authorization"] = auth_token
         resp = requests.get(
             f"{instance_url}/api/settings",
+            headers=headers,
             timeout=5,
         )
         resp.raise_for_status()

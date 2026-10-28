@@ -36,51 +36,100 @@ _TIMER_PATH = Path(f"/etc/systemd/system/{_SERVICE_NAME}.timer")
 # Cron → OnCalendar conversion
 # ---------------------------------------------------------------------------
 
+_DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+_DOW_INDEX = {name.lower(): i for i, name in enumerate(_DOW_NAMES)}
+
+
+def _cron_field_to_systemd(field: str, lo: int, hi: int, kind: str) -> str:
+    """Convert one cron field to a systemd calendar component.
+
+    *kind* is ``"time"`` (minute/hour, steps start at 0, values zero-padded),
+    ``"date"`` (dom or month, steps start at 1), or ``"dow"`` (numbers 0-7 or
+    three-letter names, mapped to systemd day names).
+
+    Raises :class:`ValueError` for anything that cannot be converted
+    **exactly** — a silently wrong schedule is worse than an error.
+    """
+    step_start = 0 if kind == "time" else 1
+
+    def single(tok: str) -> int:
+        if kind == "dow":
+            idx = _DOW_INDEX.get(tok.lower())
+            if idx is not None:
+                return idx
+        if not tok.isdigit():
+            raise ValueError(f"unsupported cron value {tok!r}")
+        v = int(tok)
+        if not lo <= v <= hi:
+            raise ValueError(f"cron value {tok!r} outside range {lo}-{hi}")
+        return v
+
+    def fmt(v: int) -> str:
+        if kind == "time":
+            return f"{v:02d}"
+        return str(v)
+
+    def component(tok: str) -> str:
+        if "-" in tok:
+            a, _, b = tok.partition("-")
+            va, vb = single(a), single(b)
+            if va > vb:
+                raise ValueError(f"inverted cron range {tok!r}")
+            if kind == "dow":
+                return f"{_DOW_NAMES[va % 7]}..{_DOW_NAMES[vb % 7]}"
+            return f"{fmt(va)}..{fmt(vb)}"
+        v = single(tok)
+        if kind == "dow":
+            return _DOW_NAMES[v % 7]
+        return fmt(v)
+
+    if field == "*":
+        return "*"
+    if field.startswith("*/"):
+        step = field[2:]
+        if kind == "dow":
+            raise ValueError(f"stepped day-of-week ({field!r}) is not supported")
+        if not step.isdigit() or int(step) == 0:
+            raise ValueError(f"unsupported cron step {field!r}")
+        return f"{step_start}/{int(step)}"
+    return ",".join(component(tok) for tok in field.split(","))
+
 
 def _cron_to_oncalendar(cron_expr: str) -> str:
     """Convert a 5-field cron expression to a systemd ``OnCalendar`` value.
 
-    Supported patterns::
-
-        M H    * * *     → *-*-* HH:MM:00
-        M H    */N * *   → *-*-* HH:MM:00  (interval not fully supported)
-        M H    * * DOW   → DOW *-*-* HH:MM:00
-
-    Falls back to ``*-*-* HH:MM:00`` if parsing fails.
+    Supported: ``*``, plain values, comma lists, ``a-b`` ranges (all fields)
+    and ``*/N`` steps (minute/hour/dom/month). Everything else raises
+    :class:`ValueError` — callers must surface that instead of guessing.
     """
     parts = cron_expr.strip().split()
     if len(parts) != 5:
-        return "*-*-* 03:00:00"
-
+        raise ValueError(
+            f"cron expression must have 5 fields, got {len(parts)}: {cron_expr!r}"
+        )
     minute_s, hour_s, dom_s, month_s, dow_s = parts
 
-    # Day-of-week mapping (cron 0-7 → systemd Mon..Sun)
-    dow_map = {
-        "0": "Sun", "7": "Sun",
-        "1": "Mon", "2": "Tue", "3": "Wed",
-        "4": "Thu", "5": "Fri", "6": "Sat",
-    }
+    minute = _cron_field_to_systemd(minute_s, 0, 59, "time")
+    hour = _cron_field_to_systemd(hour_s, 0, 23, "time")
+    dom = _cron_field_to_systemd(dom_s, 1, 31, "date")
+    month = _cron_field_to_systemd(month_s, 1, 12, "date")
+    dow = _cron_field_to_systemd(dow_s, 0, 7, "dow")
 
-    # Build time part
-    try:
-        hour = int(hour_s) if hour_s.isdigit() else 0
-        minute = int(minute_s) if minute_s.isdigit() else 0
-        time_part = f"{hour:02d}:{minute:02d}:00"
-    except (ValueError, TypeError):
-        time_part = "03:00:00"
-
-    # Day-of-week
-    if dow_s != "*" and not dow_s.startswith("*/"):
-        # Could be "0", "1,3,5", etc.
-        days = []
-        for d in dow_s.split(","):
-            d = d.strip()
-            days.append(dow_map.get(d, d))
-        dow_part = ",".join(days) + " *-*-*"
+    # Date part: leave at *-*-* unless dom/month constrain it.
+    if dom == "*" and month == "*":
+        date_part = "*-*-*"
     else:
-        dow_part = "*-*-*"
+        date_part = f"*-{month}-{dom}"
 
-    return f"{dow_part} {time_part}"
+    # Time part. Seconds default to :00; when a step (a/b) is present we omit
+    # the seconds component, matching the documented `*:0/15` form.
+    if "/" in minute or "/" in hour:
+        time_part = f"{hour}:{minute}"
+    else:
+        time_part = f"{hour}:{minute}:00"
+
+    prefix = f"{dow} " if dow != "*" else ""
+    return f"{prefix}{date_part} {time_part}"
 
 
 # ---------------------------------------------------------------------------
@@ -112,14 +161,20 @@ def _get_service_user() -> str:
     """Determine the unprivileged user that should run the backup service.
 
     Uses the owner of the ``pm`` binary, falling back to the current user.
+    Never returns ``root`` — a system-wide (root-owned) install must not make
+    the backup job run as root.
     """
     pm_path = _find_pm_binary()
+    user: str | None = None
     try:
         stat_info = os.stat(pm_path)
         import pwd
-        return pwd.getpwuid(stat_info.st_uid).pw_name
+        user = pwd.getpwuid(stat_info.st_uid).pw_name
     except (OSError, KeyError):
-        return os.environ.get("USER", "ubuntu")
+        user = None
+    if not user or user == "root":
+        user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "ubuntu"
+    return user
 
 
 def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -254,21 +309,21 @@ def get_sftp_cron() -> dict[str, Any]:
         "raw": "",
     }
 
-    # Check if timer unit exists and is active
+    # Check if timer unit exists and is active (read-only — no sudo needed)
     try:
-        status = _systemctl("is-active", f"{_SERVICE_NAME}.timer", check=False)
+        status = subprocess.run(
+            ["systemctl", "is-active", f"{_SERVICE_NAME}.timer"],
+            capture_output=True, text=True, check=False,
+        )
         if status.stdout.strip() == "active":
             result["active"] = True
     except Exception:
         pass
 
-    # Read the OnCalendar value from the timer unit
+    # Read the OnCalendar value from the timer unit (world-readable path)
     if _TIMER_PATH.is_file():
         try:
-            content = subprocess.run(
-                ["sudo", "cat", str(_TIMER_PATH)],
-                capture_output=True, text=True, check=True,
-            ).stdout
+            content = _TIMER_PATH.read_text(encoding="utf-8")
             for line in content.splitlines():
                 if line.strip().startswith("OnCalendar="):
                     oncal = line.strip().split("=", 1)[1]
@@ -278,13 +333,10 @@ def get_sftp_cron() -> dict[str, Any]:
         except Exception:
             pass
 
-    # Read the command from the service unit
+    # Read the command from the service unit (world-readable path)
     if _SERVICE_PATH.is_file():
         try:
-            content = subprocess.run(
-                ["sudo", "cat", str(_SERVICE_PATH)],
-                capture_output=True, text=True, check=True,
-            ).stdout
+            content = _SERVICE_PATH.read_text(encoding="utf-8")
             for line in content.splitlines():
                 if line.strip().startswith("ExecStart="):
                     result["command"] = line.strip().split("=", 1)[1]
@@ -306,12 +358,21 @@ def set_sftp_cron(schedule: str, pm_path: str | None = None) -> bool:
         Full path to the ``pm`` binary.  Auto-detected if not provided.
 
     Returns ``True`` on success.
+
+    Raises
+    ------
+    ValueError
+        If *schedule* is not a supported 5-field cron expression.
+    RuntimeError
+        If a systemd command fails (includes stderr for diagnosis).
     """
     if pm_path is None:
         pm_path = _find_pm_binary()
 
-    user = _get_service_user()
+    # Validate before touching anything — a bad expression must fail loudly,
+    # not silently produce a wrong schedule.
     oncalendar = _cron_to_oncalendar(schedule)
+    user = _get_service_user()
 
     try:
         # Write service unit
@@ -335,8 +396,11 @@ def set_sftp_cron(schedule: str, pm_path: str | None = None) -> bool:
         _cleanup_legacy_crontab()
 
         return True
-    except Exception:
-        return False
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"systemctl failed (exit {exc.returncode}): {stderr or exc.cmd}"
+        ) from exc
 
 
 def remove_sftp_cron() -> bool:
@@ -347,6 +411,9 @@ def remove_sftp_cron() -> bool:
         _remove_unit_file(_TIMER_PATH)
         _remove_unit_file(_SERVICE_PATH)
         _systemctl("daemon-reload")
+        # Also remove any legacy root-crontab entry from the old design so
+        # backups don't keep running after being "disabled".
+        _cleanup_legacy_crontab()
         return True
     except Exception:
         return False
@@ -362,15 +429,23 @@ def _oncalendar_to_human(oncalendar: str) -> str:
 
     E.g. ``*-*-* 03:00:00`` → ``daily at 03:00``
     """
-    # DOW *-*-* HH:MM:SS → weekly on DOW at HH:MM
+    # *-*-* *:0/15 → every 15 minutes
+    step_min = re.match(r'\*-\*-\*\s+\*:(\d+)/(\d+)$', oncalendar)
+    if step_min:
+        return f"every {step_min.group(2)} minutes"
+
+    # DOW *-*-* HH:MM:SS → weekly on DOW at HH:MM (names, lists or ranges)
     dow_match = re.match(
-        r'([A-Z][a-z]{2}(?:,[A-Z][a-z]{2})*)\s+\*-\*-\*\s+(\d{2}:\d{2}):\d{2}',
+        r'([A-Z][a-z]{2}(?:(?:\.\.|,)[A-Z][a-z]{2})*)\s+\*-\*-\*\s+(\d{2}:\d{2}):\d{2}',
         oncalendar,
     )
     if dow_match:
-        days = dow_match.group(1)
-        time = dow_match.group(2)
-        return f"weekly on {days} at {time}"
+        return f"weekly on {dow_match.group(1)} at {dow_match.group(2)}"
+
+    # *-*-D HH:MM:SS → monthly on day D at HH:MM
+    month_match = re.match(r'\*-\*-(\d[\d,]*)\s+(\d{2}:\d{2}):\d{2}', oncalendar)
+    if month_match:
+        return f"monthly on day {month_match.group(1)} at {month_match.group(2)}"
 
     # *-*-* HH:MM:SS → daily at HH:MM
     daily_match = re.match(r'\*-\*-\*\s+(\d{2}:\d{2}):\d{2}', oncalendar)

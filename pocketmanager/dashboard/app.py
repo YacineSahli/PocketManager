@@ -14,6 +14,21 @@ def create_app() -> Flask:
 
     app.register_blueprint(api, url_prefix="/api")
 
+    @app.after_request
+    def _security_headers(response):
+        # Modest hardening: blocks framing, MIME sniffing, and (via
+        # connect-src) data exfiltration from any injected script.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'none'",
+        )
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        return response
+
     @app.route("/")
     def index():
         return send_from_directory(
@@ -23,6 +38,6 @@ def create_app() -> Flask:
     return app
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8888, debug: bool = False):
+def run_server(host: str = "127.0.0.1", port: int = 8888, debug: bool = False):
     app = create_app()
     app.run(host=host, port=port, debug=debug)

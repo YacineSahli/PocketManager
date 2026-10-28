@@ -77,6 +77,7 @@ def generate_service_content(
     port: int,
     working_dir: str,
     env: dict[str, str] | None = None,
+    bind_host: str = "127.0.0.1",
 ) -> str:
     """Generate the full content of a systemd service unit file.
 
@@ -92,6 +93,9 @@ def generate_service_content(
     env:
         Optional environment variables.  Each ``KEY=VALUE`` pair becomes an
         ``Environment="KEY=VALUE"`` line in the ``[Service]`` section.
+    bind_host:
+        Address PocketBase binds to.  Defaults to loopback — public exposure
+        should go through a reverse proxy (Pangolin) on the same host.
 
     Returns
     -------
@@ -99,18 +103,21 @@ def generate_service_content(
         The complete service file text.
     """
     env = env or {}
-    _sanitize_env(env) if env else None
+    _sanitize_env(env)
     env_lines = ""
     if env:
         env_lines = "\n".join(f'Environment="{k}={v}"' for k, v in env.items())
 
     # Health-check lines — only include when curl is available on the host.
+    # Use the resolved curl path so the unit doesn't reference a binary that
+    # may live elsewhere than /usr/bin on this distribution.
     health_check_lines = ""
-    if shutil.which("curl"):
+    curl_path = shutil.which("curl")
+    if curl_path:
         health_check_lines = (
             "\n# Health check\n"
             f"ExecStartPost=/bin/sleep 2\n"
-            f"ExecStartPost=/usr/bin/curl -sf http://localhost:{port}/api/health\n"
+            f"ExecStartPost={curl_path} -sf http://localhost:{port}/api/health\n"
         )
 
     content = f"""\
@@ -131,7 +138,7 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 WorkingDirectory={working_dir}
-ExecStart={working_dir}/pocketbase serve --http=0.0.0.0:{port}
+ExecStart={working_dir}/pocketbase serve --http={bind_host}:{port}
 {env_lines}
 {health_check_lines}
 # Security
@@ -168,8 +175,9 @@ def create_service(
     port: int,
     working_dir: str,
     env: dict[str, str] | None = None,
+    bind_host: str = "127.0.0.1",
 ) -> Path:
-    """Write a systemd service file and reload the daemon.
+    """Write a systemd service file, reload the daemon, and enable the unit.
 
     Uses ``sudo tee`` to write the file (requires sudo).
 
@@ -183,6 +191,8 @@ def create_service(
         Full path to the instance directory.
     env:
         Optional environment variables.
+    bind_host:
+        Address PocketBase binds to (see :func:`generate_service_content`).
 
     Returns
     -------
@@ -192,10 +202,10 @@ def create_service(
     Raises
     ------
     subprocess.CalledProcessError
-        If the ``tee`` or ``daemon-reload`` command fails.
+        If the ``tee``, ``daemon-reload``, or ``enable`` command fails.
     """
     service_path = get_service_path(name)
-    content = generate_service_content(name, port, working_dir, env)
+    content = generate_service_content(name, port, working_dir, env, bind_host)
 
     # Write the service file via sudo tee (redirect stdout to /dev/null to
     # avoid dumping the unit file contents to the terminal).
@@ -210,6 +220,13 @@ def create_service(
     subprocess.run(
         ["sudo", "systemctl", "daemon-reload"],
         check=True,
+    )
+
+    # Enable the unit so instances survive a reboot.  Idempotent.
+    subprocess.run(
+        ["sudo", "systemctl", "enable", get_service_name(name)],
+        check=True,
+        stdout=subprocess.DEVNULL,
     )
 
     return service_path

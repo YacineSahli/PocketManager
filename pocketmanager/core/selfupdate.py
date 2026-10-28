@@ -87,8 +87,11 @@ def check_for_update() -> dict | None:
     """Check whether a newer version is available on GitHub.
 
     Returns a dict with ``local`` (current short hash), ``remote`` (remote
-    short hash), and ``log`` (one-line log of incoming commits) if updates
-    are available, or ``None`` if already up to date (or on failure).
+    short hash), ``log`` (one-line log of incoming commits) and
+    ``up_to_date`` (False) if an update is available. Returns
+    ``{"up_to_date": True}`` when current. Returns ``None`` **only** when the
+    check itself failed (no local marker, GitHub unreachable, rate limited) —
+    callers must not report that as "up to date".
     """
     local_hash = _read_local_commit()
     remote_hash = _fetch_remote_commit()
@@ -97,11 +100,12 @@ def check_for_update() -> dict | None:
         return None
 
     if local_hash == remote_hash:
-        return None
+        return {"up_to_date": True}
 
     incoming = _fetch_commit_log(local_hash, remote_hash)
 
     return {
+        "up_to_date": False,
         "local": local_hash[:7],
         "remote": remote_hash[:7],
         "log": incoming,

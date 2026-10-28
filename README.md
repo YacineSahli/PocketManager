@@ -105,6 +105,8 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 {
   "base_dir": "/home/ubuntu/pocketbases",
   "cache_dir": "/home/ubuntu/.pocketmanager/cache",
+  "bind_host": "127.0.0.1",
+  "dashboard_host": "127.0.0.1",
   "dashboard_port": 8888,
   "dashboard_password": "",
   "port_range": {
@@ -133,7 +135,8 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
     "password": "",
     "private_key_path": "",
     "remote_path": "backups",
-    "max_remote_backups": 30
+    "max_remote_backups": 30,
+    "host_key_fingerprint": ""
   }
 }
 ```
@@ -142,6 +145,8 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 |-------|-------------|
 | `base_dir` | Root directory where instance data folders are created |
 | `cache_dir` | Directory for caching downloaded PocketBase binaries |
+| `bind_host` | Address PocketBase instances bind to (default: `127.0.0.1` — loopback, exposed via Pangolin). Set to `0.0.0.0` only if you firewall the ports yourself |
+| `dashboard_host` | Address the web dashboard binds to (default: `127.0.0.1` — reach it via an SSH tunnel or the Pangolin proxy) |
 | `dashboard_port` | Port for the web dashboard (default: 8888) |
 | `dashboard_password` | Password to protect the web dashboard (required — you will be prompted on first launch) |
 | `port_range` | Min/max port range for automatic port allocation |
@@ -163,6 +168,7 @@ PocketManager stores its configuration in `/etc/pocketmanager/config.json`. The 
 | `sftp.private_key_path` | Path to SSH private key for key-based auth |
 | `sftp.remote_path` | Remote directory for backups (default: `backups`) |
 | `sftp.max_remote_backups` | Maximum remote backups to keep per instance (default: 30) |
+| `sftp.host_key_fingerprint` | Pinned SSH host key (MD5). Recorded automatically on first connection (trust-on-first-use); a changed key aborts the connection. Clear it only if you intentionally rebuilt the SFTP server |
 
 View and edit configuration from the CLI:
 
@@ -813,10 +819,14 @@ The **Local Backup** column queries PocketBase's actual backup cron setting (not
 
 ## Security
 
-- Instances run as a dedicated `pocketbase` system user, not as root
+- **Network exposure:** by default, instances and the dashboard bind to `127.0.0.1` — nothing is reachable from the internet except through the Pangolin reverse proxy on the same host. If you set `bind_host`/`dashboard_host` to `0.0.0.0`, you are responsible for firewalling those ports (e.g. `sudo ufw allow from <pangolin-ip> to any port 8090:8999`)
+- Instances run as a dedicated `pocketbase` system user, not as root, and are `systemctl enable`d so they survive reboots
 - Systemd service files include hardening directives (`ProtectSystem`, `NoNewPrivileges`, and others) to limit the attack surface
 - Health checks run via `ExecStartPost` to verify instances start correctly
-- The web dashboard supports password-based authentication (configured via `dashboard_password`)
+- The web dashboard requires a password, uses timing-safe comparison, rate-limits failed logins per IP (5 attempts → 5-minute lockout), and sends security headers (CSP, `X-Frame-Options: DENY`)
+- Secrets (`dashboard_password`, `sftp.password`, `pangolin.api_key`) are masked in `pm config` and the dashboard API unless `--reveal` is used; config and state files are mode `0660`
+- SFTP host keys are pinned on first connection; a changed key aborts the backup upload
+- Instance updates roll back to the previous binary automatically if the new one fails to start
 - **Recommendation:** In PocketBase's admin settings, restrict the superuser login to trusted IP addresses when possible
 
 ---

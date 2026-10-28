@@ -121,7 +121,29 @@ def _format_auth_status(auth_info: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+class PMGroup(click.Group):
+    """Click group that converts subprocess failures into clean errors.
+
+    sudo/systemctl/cp failures raise ``subprocess.CalledProcessError``, which
+    individual commands don't (and shouldn't have to) catch — without this,
+    the most common failure mode (sudo password expired) dumps a traceback.
+    """
+
+    def invoke(self, ctx: click.Context):
+        try:
+            return super().invoke(ctx)
+        except subprocess.CalledProcessError as exc:
+            cmd = " ".join(str(part) for part in (exc.cmd or []))
+            console.print(
+                f"[bold red]Error:[/bold red] command failed (exit "
+                f"{exc.returncode}): {cmd}\n"
+                "[dim]If this was a sudo permission issue, re-run with valid "
+                "sudo credentials (e.g. `sudo -v` first).[/dim]"
+            )
+            ctx.exit(1)
+
+
+@click.group(cls=PMGroup)
 @click.version_option(version=__version__, prog_name="pocketmanager")
 def cli() -> None:
     """PocketManager — manage multiple PocketBase instances on a single VPS."""
@@ -256,6 +278,18 @@ def create(
             )
         )
 
+    # Show warning if the service failed to start
+    start_warning = result.get("start_warning") if result else None
+    if start_warning:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold yellow]Service did not start.[/bold yellow]\n\n{start_warning}",
+                title="[bold yellow]⚠ Service[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
 
 # ---------------------------------------------------------------------------
 # list / ls
@@ -293,11 +327,21 @@ def list_instances_cmd() -> None:
         dashboard_url = f"{url}/_/" if url != "(unknown)" else "—"
 
         # Local backup status — query PocketBase's actual cron setting
+        # (requires superuser auth; falls back to the PM-side flag when the
+        # instance has no stored credentials or is unreachable)
         local_label = "[dim]off[/dim]"
         if inst.get("active", False):
             try:
-                from pocketmanager.core.backup import get_backup_cron_status
-                cron_status = get_backup_cron_status(f"http://127.0.0.1:{inst.get('port', 8090)}")
+                from pocketmanager.core.backup import (
+                    get_backup_cron_status,
+                    get_instance_auth_token,
+                )
+
+                token = get_instance_auth_token(inst.get("name", ""))
+                cron_status = get_backup_cron_status(
+                    f"http://127.0.0.1:{inst.get('port', 8090)}",
+                    auth_token=token,
+                )
                 if cron_status["enabled"]:
                     local_label = "[bold green]on[/bold green]"
             except Exception:
@@ -522,7 +566,7 @@ def modify(
         else:
             console.print(
                 f"[bold yellow]Warning: Failed to restart '{name}'. "
-                "Apply changes manually with: pm restart {name}[/bold yellow]"
+                f"Apply changes manually with: pm restart {name}[/bold yellow]"
             )
     else:
         console.print(
@@ -803,9 +847,9 @@ def backup(name: str, download: bool, backup_name: str | None, push_remote: bool
             console.print("[bold yellow]Warning: Could not identify backup key for download.[/bold yellow]")
             return
 
-        # Download to the instance directory
-        instance_dir = instance.get("instance_dir", "")
-        dest_path = f"{instance_dir}/{backup_key}" if instance_dir else backup_key
+        # Download to the current directory — the instance directory is
+        # owned by the `pocketbase` service user and not writable by us.
+        dest_path = os.path.abspath(backup_key)
 
         console.print(f"[bold]Downloading backup to {dest_path}...[/bold]")
         dl_ok = backup_mod.download_backup(instance_url, backup_key, dest_path, auth_token=token)
@@ -1081,7 +1125,10 @@ def _list_remote_backups(name: str) -> None:
 @click.option("--host", "sftp_host", default=None, help="SFTP server hostname.")
 @click.option("--port", "sftp_port", default=None, type=int, help="SFTP port (default: 22).")
 @click.option("--username", "sftp_user", default=None, help="SFTP username.")
-@click.option("--password", "sftp_pass", default=None, help="SFTP password (use --no-password for key-only auth).")
+@click.option("--password", "sftp_pass", default=None,
+              help="SFTP password (visible in shell history — prefer --prompt-password).")
+@click.option("--prompt-password", "sftp_prompt_pass", is_flag=True, default=False,
+              help="Prompt for the SFTP password with hidden input.")
 @click.option("--no-password", is_flag=True, default=False,
               help="Clear stored password (use key-based auth).")
 @click.option("--private-key", "sftp_key", default=None,
@@ -1099,6 +1146,7 @@ def sftp_config(
     sftp_port: int | None,
     sftp_user: str | None,
     sftp_pass: str | None,
+    sftp_prompt_pass: bool,
     no_password: bool,
     sftp_key: str | None,
     sftp_remote_path: str | None,
@@ -1115,11 +1163,14 @@ def sftp_config(
     \b
     Examples:
       pm sftp-config --host u123456.your-storagebox.de --port 23 --username u123456-sub1
-      pm sftp-config --password
+      pm sftp-config --prompt-password
       pm sftp-config --enable
       pm sftp-config --test
     """
     from pocketmanager.core.config import get, load_config, save_config
+
+    if sftp_prompt_pass:
+        sftp_pass = click.prompt("SFTP password", hide_input=True)
 
     config = load_config()
     sftp = config.setdefault("sftp", {})
@@ -1128,7 +1179,7 @@ def sftp_config(
     has_any_option = any([
         sftp_host, sftp_port is not None, sftp_user, sftp_pass,
         no_password, sftp_key, sftp_remote_path, sftp_max is not None,
-        enable is not None, test_only,
+        enable is not None, test_only, sftp_prompt_pass,
     ])
 
     if not has_any_option:
@@ -1341,12 +1392,24 @@ def local_backup_schedule(
 
     if not has_any_option:
         # Show current status — query PocketBase's actual settings
+        # (requires superuser auth; fall back to PM-side flags when the
+        # instance has no stored credentials or is unreachable)
         try:
-            from pocketmanager.core.backup import get_backup_cron_status
-            cron_status = get_backup_cron_status(f"http://localhost:{port}")
-            status = "[bold green]enabled[/bold green]" if cron_status["enabled"] else "[dim]disabled[/dim]"
-            schedule = cron_status["cron"]
-            keep = cron_status["max_keep"]
+            from pocketmanager.core.backup import (
+                get_backup_cron_status,
+                get_instance_auth_token,
+            )
+
+            cron_status = get_backup_cron_status(
+                f"http://localhost:{port}",
+                auth_token=get_instance_auth_token(name),
+            )
+            if cron_status["cron"]:
+                status = "[bold green]enabled[/bold green]" if cron_status["enabled"] else "[dim]disabled[/dim]"
+                schedule = cron_status["cron"]
+                keep = cron_status["max_keep"]
+            else:
+                raise RuntimeError("no credentials or unreachable")
         except Exception:
             # Fallback to PM-side flags
             status = "[bold green]enabled[/bold green]" if instance.get("auto_backup", False) else "[dim]disabled[/dim]"
@@ -1489,7 +1552,14 @@ def sftp_backup_schedule(
         )
         sys.exit(1)
 
-    ok = set_sftp_cron(schedule)
+    try:
+        ok = set_sftp_cron(schedule)
+    except ValueError as exc:
+        console.print(f"[bold red]Error: {exc}[/bold red]")
+        sys.exit(1)
+    except RuntimeError as exc:
+        console.print(f"[bold red]Error: {exc}[/bold red]\n[dim]Try with sudo.[/dim]")
+        sys.exit(1)
     if ok:
         console.print(
             f"[bold green]SFTP backup timer installed.[/bold green]\n"
@@ -1680,6 +1750,13 @@ def self_update() -> None:
     update = selfupdate_mod.check_for_update()
 
     if update is None:
+        console.print(
+            "[bold yellow]Could not check for updates[/bold yellow] "
+            "(GitHub unreachable or rate limited — try again later)."
+        )
+        return
+
+    if update.get("up_to_date"):
         console.print("[bold green]PocketManager is already up to date.[/bold green]")
         return
 
@@ -1730,13 +1807,17 @@ def config(args: tuple[str, ...], reveal: bool) -> None:
 
         if not reveal:
             current_config = copy.deepcopy(current_config)
-            # Mask dashboard_password
+            # Mask secrets
             if current_config.get("dashboard_password"):
                 current_config["dashboard_password"] = "***"
-            # Mask pangolin.api_key
+            if current_config.get("dashboard_pangolin_password"):
+                current_config["dashboard_pangolin_password"] = "***"
             pangolin = current_config.get("pangolin", {})
             if pangolin.get("api_key"):
                 pangolin["api_key"] = "***"
+            sftp_cfg = current_config.get("sftp", {})
+            if sftp_cfg.get("password"):
+                sftp_cfg["password"] = "***"
 
         import json as _json
 
@@ -1901,14 +1982,19 @@ def _setup_dashboard_pangolin(config: dict, dash_port: int, daemon: bool) -> Non
         console.print("[bold yellow]Resource created but no ID returned — skipping auth setup.[/bold yellow]")
         return
 
-    # Enable password authentication on the resource
-    dashboard_password = config.get("dashboard_password", "")
-    if dashboard_password:
-        if not set_resource_password(resource_id, dashboard_password):
-            console.print(
-                "[bold yellow]Resource created but failed to set password authentication.[/bold yellow]"
-            )
-            console.print("[dim]Set it manually in the Pangolin dashboard.[/dim]")
+    # Enable password authentication on the resource. Use a distinct random
+    # password — reusing the dashboard's Basic-auth password would mean one
+    # leak compromises both layers.
+    import secrets as _secrets
+
+    pangolin_password = _secrets.token_urlsafe(16)
+    if not set_resource_password(resource_id, pangolin_password):
+        console.print(
+            "[bold yellow]Resource created but failed to set password authentication.[/bold yellow]"
+        )
+        console.print("[dim]Set it manually in the Pangolin dashboard.[/dim]")
+    else:
+        config["dashboard_pangolin_password"] = pangolin_password
 
     # Save the resource ID so we don't recreate on next start
     config["dashboard_pangolin_resource_id"] = str(resource_id)
@@ -1919,7 +2005,17 @@ def _setup_dashboard_pangolin(config: dict, dash_port: int, daemon: bool) -> Non
     console.print(
         f"[bold green]Pangolin resource '{resource_name}' created at https://{full_domain}[/bold green]"
     )
-    console.print("[dim]Password authentication is enabled via Pangolin.[/dim]")
+    if config.get("dashboard_pangolin_password"):
+        console.print(
+            Panel(
+                f"[bold]Pangolin password:[/bold] {config['dashboard_pangolin_password']}\n\n"
+                "[dim]This password gates public access to the dashboard via Pangolin "
+                "(separate from the dashboard login). It is stored in config.json — "
+                "reveal with: pm config --reveal[/dim]",
+                title="[bold yellow]Pangolin Resource Password[/bold yellow]",
+                border_style="yellow",
+            )
+        )
 
 
 @cli.command()
@@ -1955,6 +2051,7 @@ def dashboard(dash_port: int | None, daemon: bool, stop: bool) -> None:
 
     if dash_port is None:
         dash_port = cfg_get("dashboard_port", 8888)
+    dash_host = str(cfg_get("dashboard_host", "127.0.0.1"))
 
     # Ensure a dashboard password is set — dashboard must not run unauthenticated
     config = load_config()
@@ -1982,7 +2079,15 @@ def dashboard(dash_port: int | None, daemon: bool, stop: bool) -> None:
         console.print("[dim]Install with: pip install flask[/dim]")
         sys.exit(1)
 
-    url = f"http://localhost:{dash_port}"
+    display_host = "localhost" if dash_host in ("127.0.0.1", "::1") else dash_host
+    url = f"http://{display_host}:{dash_port}"
+    if dash_host == "0.0.0.0":
+        console.print(
+            "[bold yellow]Warning: dashboard is bound to 0.0.0.0 (dashboard_host in "
+            "config) — it is reachable from any network interface and only "
+            "protected by its password. Prefer keeping it on loopback and "
+            "exposing it through Pangolin or an SSH tunnel.[/bold yellow]"
+        )
     console.print(f"[bold]Starting dashboard on {url}...[/bold]")
 
     if daemon:
@@ -1997,17 +2102,19 @@ def dashboard(dash_port: int | None, daemon: bool, stop: bool) -> None:
             console.print(f"[dim]Stop with: pm dashboard --stop[/dim]")
             return
 
-        # Child process — run the dashboard
+        # Child process — detach from the terminal session so it survives
+        # the shell exiting, then run the dashboard.
         try:
+            os.setsid()
             app = create_app()
-            app.run(host="0.0.0.0", port=dash_port)
+            app.run(host=dash_host, port=dash_port)
         except Exception as exc:
             console.print(f"[bold red]Error starting dashboard: {exc}[/bold red]")
             sys.exit(1)
     else:
         app = create_app()
         console.print(f"[bold green]Dashboard is available at: {url}[/bold green]")
-        app.run(host="0.0.0.0", port=dash_port)
+        app.run(host=dash_host, port=dash_port)
 
 
 # ---------------------------------------------------------------------------
@@ -2146,14 +2253,16 @@ def credentials(name: str) -> None:
 
 @cli.command()
 @click.argument("name", type=INSTANCE_NAME)
-@click.option("--password", "password_val", default=None, help="Set password authentication.")
+@click.option("--password", "password_val", is_flag=True, default=False,
+              help="Set password authentication (prompts with hidden input).")
 @click.option("--no-password", is_flag=True, default=False, help="Remove password authentication.")
-def auth(name: str, password_val: str | None, no_password: bool) -> None:
+def auth(name: str, password_val: bool, no_password: bool) -> None:
     """Manage Pangolin authentication for a PocketBase instance.
 
     Without options, displays the current authentication status.
 
-    Use --password <value> to set a password, or --no-password to remove it.
+    Use --password to set a password (hidden prompt), or --no-password to
+    remove it.
     """
     from pocketmanager.core.state import get_instance
 
@@ -2173,8 +2282,13 @@ def auth(name: str, password_val: str | None, no_password: bool) -> None:
 
     from pocketmanager.core import pangolin as pangolin_mod
 
+    # Resolve flag -> concrete password before the status branch
+    new_password: str | None = None
+    if password_val:
+        new_password = click.prompt("Pangolin resource password", hide_input=True, confirmation_prompt=True)
+
     # No flags: show current auth status
-    if not password_val and not no_password:
+    if not new_password and not no_password:
         auth_info = pangolin_mod.get_resource_auth_info(resource_id)
         panel_lines = f"[bold]Resource ID:[/bold]  {resource_id}\n"
         panel_lines += f"[bold]Auth:[/bold]         {_format_auth_status(auth_info)}"
@@ -2197,8 +2311,8 @@ def auth(name: str, password_val: str | None, no_password: bool) -> None:
     # Apply changes
     success = True
 
-    if password_val is not None:
-        if not pangolin_mod.set_resource_password(resource_id, password_val):
+    if new_password is not None:
+        if not pangolin_mod.set_resource_password(resource_id, new_password):
             console.print("[bold red]Error: Failed to set password authentication.[/bold red]")
             success = False
         else:

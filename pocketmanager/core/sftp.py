@@ -33,9 +33,8 @@ from __future__ import annotations
 
 import logging
 import os
-import stat
-from pathlib import Path, PurePosixPath
-from typing import Any, Generator
+from pathlib import PurePosixPath
+from typing import Any
 
 import paramiko
 
@@ -45,6 +44,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Connection helpers
 # ---------------------------------------------------------------------------
+
+
+def _host_fingerprint(sftp_config: dict[str, Any]) -> str:
+    """Return the pinned host-key fingerprint from config ('' if unpinned)."""
+    return str(sftp_config.get("host_key_fingerprint", "") or "").lower()
+
+
+def _pin_host_fingerprint(host: str, fingerprint: str) -> None:
+    """Persist the host-key fingerprint (trust-on-first-use)."""
+    try:
+        from pocketmanager.core import config as config_mod
+
+        config_mod.set("sftp.host_key_fingerprint", fingerprint)
+        logger.info("Pinned SFTP host key for %s", host)
+    except Exception as exc:  # non-fatal — pinning is best-effort
+        logger.warning("Could not persist SFTP host key pin: %s", exc)
 
 
 def _resolve_host(host: str, port: int) -> tuple[str, int]:
@@ -97,6 +112,11 @@ def _create_client(sftp_config: dict[str, Any]) -> paramiko.SSHClient:
     Uses password auth when *password* is set, otherwise tries the
     *private_key_path* (or falls back to the default ssh-agent /
     ~/.ssh/keys).
+
+    Host keys are pinned trust-on-first-use: the first successful connection
+    stores the server's key fingerprint in ``sftp.host_key_fingerprint``;
+    every later connection must present the same key or the connection is
+    refused (mitigates man-in-the-middle attacks on the backup channel).
     """
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -130,15 +150,33 @@ def _create_client(sftp_config: dict[str, Any]) -> paramiko.SSHClient:
         connect_kwargs["look_for_keys"] = True
 
     client.connect(**connect_kwargs)
+
+    # Host-key pinning (TOFU): verify the presented key against the pinned
+    # fingerprint, storing it on first contact.
+    transport = client.get_transport()
+    remote_key = transport.get_remote_server_key() if transport else None
+    if remote_key is not None:
+        import hashlib
+
+        fingerprint = hashlib.md5(remote_key.asbytes()).hexdigest()
+        pinned = _host_fingerprint(sftp_config)
+        if pinned and pinned != fingerprint:
+            client.close()
+            raise RuntimeError(
+                f"SFTP host key for {host} changed! Refusing to connect "
+                f"(possible man-in-the-middle). Pinned={pinned}, "
+                f"presented={fingerprint}. If you are sure the server was "
+                f"rebuilt, clear sftp.host_key_fingerprint in the config."
+            )
+        if not pinned:
+            _pin_host_fingerprint(host, fingerprint)
+
     return client
 
 
 def _open_sftp(sftp_config: dict[str, Any]) -> paramiko.SFTPClient:
     """Connect and return an open SFTP session."""
     client = _create_client(sftp_config)
-    transport = client.get_transport()
-    if transport is None:
-        raise RuntimeError("SSH transport is None")
     return client.open_sftp()
 
 
@@ -289,23 +327,36 @@ def upload_instance_backup(
     Returns ``(True, remote_file_path)`` on success or
     ``(False, error_message)`` on failure.
     """
+    import re as _re
     import tempfile
 
     from pocketmanager.core.backup import download_backup
     from pocketmanager.core.state import get_instance
 
-    # Download to a temp file (instance_dir may not be writable)
-    tmp_dir = tempfile.gettempdir()
-    local_path = os.path.join(tmp_dir, f"pm_sftp_{instance_name}_{backup_key}")
+    # The backup key is user-supplied and becomes part of a filesystem path —
+    # reject anything that could escape the temp directory.
+    if not _re.match(r"^[A-Za-z0-9_.-]+$", backup_key):
+        return False, f"Invalid backup key: {backup_key!r}"
 
-    # Download from PocketBase
     instance = get_instance(instance_name)
     if not instance or not instance.get("port"):
         return False, f"Instance '{instance_name}' not found or has no port"
 
+    # Download into a private temp directory (mkdtemp is 0700 — the backup
+    # contains the full database and must not be world-readable).
+    tmp_dir = tempfile.mkdtemp(prefix="pm_sftp_")
+    local_path = os.path.join(tmp_dir, backup_key)
+
+    # Download from PocketBase
     instance_url = f"http://localhost:{instance['port']}"
     ok = download_backup(instance_url, backup_key, local_path, auth_token=auth_token)
     if not ok:
+        try:
+            import shutil as _shutil
+
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
         return False, f"Failed to download backup '{backup_key}' from PocketBase"
 
     # Upload to SFTP
@@ -314,10 +365,12 @@ def upload_instance_backup(
         progress_callback=progress_callback,
     )
 
-    # Clean up local file
+    # Clean up temp directory
     try:
-        os.remove(local_path)
-    except OSError:
+        import shutil as _shutil
+
+        _shutil.rmtree(tmp_dir, ignore_errors=True)
+    except Exception:
         pass
 
     return success, result

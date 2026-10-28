@@ -231,8 +231,11 @@ def create_instance(
     # 9. Set capabilities
     set_capabilities(str(binary_path))
 
-    # 10. Create systemd service
-    create_service(name, port, str(instance_dir), env=env)
+    # 10. Create systemd service (enabled so it survives reboots)
+    create_service(
+        name, port, str(instance_dir), env=env,
+        bind_host=get("bind_host", "127.0.0.1"),
+    )
 
     # 11. Auto-create superadmin (before starting service to avoid DB lock)
     admin_email: str | None = None
@@ -256,7 +259,12 @@ def create_instance(
         )
 
     # 12. Start service
-    start_service(name)
+    start_warning: str | None = None
+    if not start_service(name):
+        start_warning = (
+            f"Service failed to start. Check logs with "
+            f"'journalctl -u pocketbase-{name}.service -n 50'."
+        )
 
     # 13. Pangolin integration (optional, non-blocking)
     pangolin_resource_id: str | None = None
@@ -321,6 +329,7 @@ def create_instance(
     if result is not None:
         result["pangolin_warning"] = pangolin_warning
         result["admin_warning"] = admin_warning
+        result["start_warning"] = start_warning
     return result  # type: ignore[return-value]
 
 
@@ -378,7 +387,7 @@ def remove_instance(
         base_dir = get("base_dir", "/home/ubuntu/pocketbases")
         resolved_dir = Path(instance_dir).resolve()
         resolved_base = Path(base_dir).resolve()
-        if not str(resolved_dir).startswith(str(resolved_base) + "/") and resolved_dir != resolved_base:
+        if not str(resolved_dir).startswith(str(resolved_base) + "/"):
             raise ValueError(
                 f"Refusing to delete '{instance_dir}': path is outside base_dir '{base_dir}'. "
                 "Possible state file tampering."
@@ -544,8 +553,8 @@ def update_instance(name: str, version: str | None = None) -> dict:
     binary_path = instance_dir / "pocketbase"
 
     # 4. Backup old binary
+    backup_path = instance_dir / "pocketbase.bak"
     if binary_path.is_file():
-        backup_path = instance_dir / "pocketbase.bak"
         subprocess.run(
             ["sudo", "cp", "-p", str(binary_path), str(backup_path)],
             check=True,
@@ -565,10 +574,23 @@ def update_instance(name: str, version: str | None = None) -> dict:
     set_permissions(str(instance_dir))
     set_capabilities(str(binary_path))
 
-    # 7. Start service
+    # 7. Start service — roll back to the previous binary on failure so the
+    # instance is not left dead with an unbootable binary.
     if not start_service(name):
+        rollback_ok = False
+        if backup_path.is_file():
+            subprocess.run(
+                ["sudo", "cp", "-p", str(backup_path), str(binary_path)],
+                check=False,
+            )
+            subprocess.run(
+                ["sudo", "chmod", "755", str(binary_path)],
+                check=False,
+            )
+            rollback_ok = start_service(name)
+        detail = " Rolled back to the previous binary." if rollback_ok else ""
         raise RuntimeError(
-            f"Failed to start instance '{name}' after update. "
+            f"Failed to start instance '{name}' after update.{detail} "
             f"Check service logs: journalctl -u pocketbase-{name}.service -n 50"
         )
 
@@ -602,6 +624,11 @@ def migrate_existing() -> list[dict]:
             continue
 
         name = entry.name[len("pocketbase-"):]
+        # Apply the same name rules as `pm create` — an unvalidated name would
+        # flow into systemd unit paths and the dashboard.
+        if not name or len(name) > 64 or not re.match(r"^[a-z0-9-]+$", name) \
+                or name.startswith("-") or name.endswith("-"):
+            continue
         if name.lower() in existing_names:
             continue
 
@@ -612,8 +639,9 @@ def migrate_existing() -> list[dict]:
         if not service_path.is_file():
             continue
 
-        # Parse service file for port and working directory
+        # Parse service file for bind host, port and working directory
         port: int | None = None
+        bind_host: str | None = None
         working_dir: str = str(entry)
         env_vars: dict[str, str] = {}
 
@@ -628,12 +656,14 @@ def migrate_existing() -> list[dict]:
                 value = value.strip()
 
                 if directive == "ExecStart":
-                    # Parse --http=0.0.0.0:PORT
+                    # Parse --http=HOST:PORT (HOST defaults to loopback when
+                    # PocketBase is given only a port).
                     import re as _re
 
-                    port_match = _re.search(r"--http=.*?:(\d+)", value)
-                    if port_match:
-                        port = int(port_match.group(1))
+                    http_match = _re.search(r"--http=([0-9.]+)?:(\d+)", value)
+                    if http_match:
+                        bind_host = http_match.group(1) or "127.0.0.1"
+                        port = int(http_match.group(2))
                 elif directive == "Environment":
                     # Remove surrounding quotes
                     env_str = value.strip().strip('"')
@@ -644,19 +674,21 @@ def migrate_existing() -> list[dict]:
         except Exception:
             pass
 
-        # Allocate port if not found in service file
+        # The port is the instance's real contract with Pangolin/proxies —
+        # never guess a new one for a live instance. Skip if unknown.
         if port is None:
-            try:
-                port = find_available_port()
-            except RuntimeError:
-                port = 8090  # fallback
+            continue
 
         # Detect version
         detected_version = detect_instance_version(entry) or "unknown"
 
-        # Regenerate service file with hardened template
+        # Regenerate service file with hardened template, preserving the
+        # original bind address (enabled so it survives reboots).
         try:
-            create_service(name, port, working_dir, env=env_vars or None)
+            create_service(
+                name, port, working_dir, env=env_vars or None,
+                bind_host=bind_host or get("bind_host", "127.0.0.1"),
+            )
         except Exception:
             pass
 
@@ -688,17 +720,32 @@ def migrate_existing() -> list[dict]:
         except Exception:
             pass
 
-        # Configure auto-backup cron in PocketBase if enabled
-        auto_backup_enabled = get("defaults.auto_backups_enabled", True)
-        if auto_backup_enabled:
-            try:
-                from pocketmanager.core.backup import configure_auto_backup
+        # Ensure we hold superuser credentials for the migrated instance so
+        # backup scheduling and status queries can authenticate.
+        admin_email: str | None = None
+        admin_password: str | None = None
+        try:
+            creds = _create_superadmin(str(Path(working_dir) / "pocketbase"))
+            if creds:
+                admin_email, admin_password = creds
+        except Exception:
+            pass
 
-                cron_expr = get("defaults.auto_backups_cron", "0 3 * * *")
-                max_keep = get("defaults.auto_backups_max_keep", 7)
-                configure_auto_backup(
-                    f"http://127.0.0.1:{port}", cron_expr, max_keep,
-                )
+        # Configure auto-backup cron in PocketBase if enabled (requires
+        # superuser auth — configure_auto_backup 401s without a token).
+        auto_backup_enabled = get("defaults.auto_backups_enabled", True)
+        cron_expr = get("defaults.auto_backups_cron", "0 3 * * *")
+        max_keep = get("defaults.auto_backups_max_keep", 7)
+        if auto_backup_enabled and admin_email and admin_password:
+            try:
+                from pocketmanager.core.backup import authenticate, configure_auto_backup
+
+                token = authenticate(f"http://127.0.0.1:{port}", admin_email, admin_password)
+                if token:
+                    configure_auto_backup(
+                        f"http://127.0.0.1:{port}", cron_expr, max_keep,
+                        auth_token=token,
+                    )
             except Exception:
                 pass
 
@@ -712,10 +759,14 @@ def migrate_existing() -> list[dict]:
             "env": env_vars,
             "pangolin_resource_id": None,
             "auto_backup": auto_backup_enabled,
-            "backup_cron": get("defaults.auto_backups_cron", "0 3 * * *") if auto_backup_enabled else "",
-            "backup_max_keep": get("defaults.auto_backups_max_keep", 7) if auto_backup_enabled else 0,
+            "backup_cron": cron_expr if auto_backup_enabled else "",
+            "backup_max_keep": max_keep if auto_backup_enabled else 0,
+            "superadmin_email": admin_email,
+            "superadmin_password": admin_password,
         }
         state_add_instance(instance_record)
-        migrated.append(state_get_instance(name))  # type: ignore[arg-type]
+        registered = state_get_instance(name)
+        if registered is not None:
+            migrated.append(registered)
 
     return migrated

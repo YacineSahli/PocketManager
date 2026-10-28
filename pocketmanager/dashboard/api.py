@@ -64,9 +64,12 @@ def create_instance():
     from pocketmanager.core.instance import create_instance
 
     data = request.get_json() or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Field 'name' is required"}), 400
     try:
         instance = create_instance(
-            name=data["name"],
+            name=name,
             port=data.get("port"),
             domain=data.get("domain"),
             env=data.get("env"),
@@ -142,6 +145,7 @@ def get_logs(name):
     from pocketmanager.core.systemd import get_journal_logs
 
     lines = request.args.get("lines", 100, type=int)
+    lines = min(max(lines, 1), 1000)  # cap — don't stream the whole journal
     logs = get_journal_logs(name, lines=lines)
     return jsonify({"logs": logs})
 
@@ -205,11 +209,15 @@ def get_config():
 
     config = load_config()
     # Don't expose sensitive fields
-    safe = {k: v for k, v in config.items() if k not in ("pangolin", "dashboard_password")}
+    safe = {k: v for k, v in config.items() if k not in ("pangolin", "sftp", "dashboard_password")}
     safe["dashboard_password"] = "***" if config.get("dashboard_password") else ""
     safe["pangolin"] = {
         k: ("***" if k in ("api_key",) and v else v)
         for k, v in config.get("pangolin", {}).items()
+    }
+    safe["sftp"] = {
+        k: ("***" if k in ("password",) and v else v)
+        for k, v in config.get("sftp", {}).items()
     }
     return jsonify(safe)
 

@@ -961,8 +961,8 @@ function renderGrid() {
     const url = buildUrl(inst);
 
     return `
-      <div class="card" data-name="${escHtml(inst.name)}">
-        <div class="card-header" onclick="toggleCard('${escAttr(inst.name)}')">
+      <div class="card" data-name="${escAttr(inst.name)}">
+        <div class="card-header" data-action="toggle">
           <div class="card-header-left">
             <div class="instance-name">${escHtml(inst.name)}</div>
           </div>
@@ -999,28 +999,28 @@ function renderGrid() {
 
         <div class="card-actions">
           ${isActive
-            ? `<button class="btn btn-sm" onclick="event.stopPropagation();stopInstance('${escAttr(inst.name)}')">
+            ? `<button class="btn btn-sm" data-action="stop">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="12" height="16" rx="1"/></svg>
                 Stop
               </button>
-              <button class="btn btn-sm" onclick="event.stopPropagation();restartInstance('${escAttr(inst.name)}')">
+              <button class="btn btn-sm" data-action="restart">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
                 Restart
               </button>`
-            : `<button class="btn btn-sm btn-success" onclick="event.stopPropagation();startInstance('${escAttr(inst.name)}')">
+            : `<button class="btn btn-sm btn-success" data-action="start">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Start
               </button>`
           }
-          <button class="btn btn-sm" onclick="event.stopPropagation();viewLogs('${escAttr(inst.name)}')">
+          <button class="btn btn-sm" data-action="logs">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
             </svg>
             Logs
           </button>
-          <button class="btn btn-sm btn-danger" style="margin-left:auto" onclick="event.stopPropagation();openRemoveModal('${escAttr(inst.name)}')">
+          <button class="btn btn-sm btn-danger" style="margin-left:auto" data-action="remove">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
             </svg>
@@ -1039,13 +1039,13 @@ function renderDetails(inst) {
     <div class="detail-section">
       <div class="detail-section-title">Health & Backups</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-sm" onclick="event.stopPropagation();fetchHealthDetail('${escAttr(inst.name)}')">
+        <button class="btn btn-sm" data-action="health">
           Check Health
         </button>
-        <button class="btn btn-sm" onclick="event.stopPropagation();fetchBackups('${escAttr(inst.name)}')">
+        <button class="btn btn-sm" data-action="backups">
           Load Backups
         </button>
-        <button class="btn btn-sm" onclick="event.stopPropagation();createBackup('${escAttr(inst.name)}')">
+        <button class="btn btn-sm" data-action="create-backup">
           Create Backup
         </button>
       </div>
@@ -1443,6 +1443,31 @@ function escAttr(str) {
 // ── Search ─────────────────────────────────────────────────────────
 document.getElementById('searchInput').addEventListener('input', () => {
   renderGrid();
+});
+
+// ── Delegated card actions ─────────────────────────────────────────
+// Card buttons carry data-action; the instance name lives once on the
+// card element (data-name). Never interpolate names into inline handlers.
+const ACTION_HANDLERS = {
+  'toggle': toggleCard,
+  'start': startInstance,
+  'stop': stopInstance,
+  'restart': restartInstance,
+  'logs': viewLogs,
+  'remove': openRemoveModal,
+  'health': fetchHealthDetail,
+  'backups': fetchBackups,
+  'create-backup': createBackup,
+};
+
+document.getElementById('instanceGrid').addEventListener('click', e => {
+  const actionEl = e.target.closest('[data-action]');
+  if (!actionEl) return;
+  const card = actionEl.closest('[data-name]');
+  const name = card ? card.dataset.name : null;
+  if (!name) return;
+  const handler = ACTION_HANDLERS[actionEl.dataset.action];
+  if (handler) handler(name);
 });
 
 // ── Modal close on overlay click ───────────────────────────────────
